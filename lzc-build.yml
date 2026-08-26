@@ -1,6 +1,5 @@
+buildscript: sh lzc/build-package.sh
 manifest: ./lzc-manifest.yml
+contentdir: ./lzc-dist
 pkgout: ./
-images:
-  app-runtime:
-    context: ./
-    dockerfile: ./deploy/docker/Dockerfile
+icon: ./lzc-icon.png

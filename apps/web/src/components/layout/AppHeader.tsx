@@ -14,9 +14,9 @@ export function AppHeader({ isMobileMenuOpen, setIsMobileMenuOpen, navigateTo, t
           <div>
             <div className="font-bold text-slate-900 text-sm tracking-tight flex items-center gap-2">
               {t.appName}
-              <span className="text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200">V1</span>
+              <span className="text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200">POC</span>
             </div>
-            <p className="text-[11px] text-slate-500 hidden sm:block">文件与 SQLite 一致性保护中心</p>
+            <p className="text-[11px] text-slate-500 hidden sm:block">应用数据探测与手动快照验证</p>
           </div>
         </div>
       </div>

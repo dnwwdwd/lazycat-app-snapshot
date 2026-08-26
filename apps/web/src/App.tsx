@@ -1,6 +1,5 @@
-﻿import { AppShell } from './AppShell';
-import { useAppController } from './hooks/useAppController';
+﻿import { SetupWizardView } from './features/setup/SetupWizardView';
 
 export default function App() {
-  return <AppShell {...useAppController()} />;
+  return <SetupWizardView />;
 }

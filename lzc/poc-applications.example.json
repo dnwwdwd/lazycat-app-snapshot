@@ -1,0 +1,11 @@
+[
+  {
+    "appid": "cloud.lazycat.demo",
+    "name": "Disposable POC fixture",
+    "version": "0.1.0",
+    "deploy_id": "deploy-demo-a",
+    "owner_uid": "<BACKUP_APP_DEPLOY_UID>",
+    "multi_instance": true,
+    "source_root": "/path/provided-by-platform-adapter"
+  }
+]

@@ -42,7 +42,7 @@ export const i18n = {
     storage: '网盘存储',
     alerts: '告警中心',
     settings: '系统设置',
-    setup: '首次向导',
+    setup: 'POC 验证',
     more: '更多'
   },
   status: {
@@ -155,7 +155,7 @@ export const i18n = {
     exportLogPackage: '导出脱敏诊断包'
   },
   setup: {
-    title: '懒猫应用备份 - 首次启动向导',
+    title: '懒猫应用备份 POC - 应用数据探测与手动快照',
     step1: '产品能力与安全边界',
     step2: '微服系统权限检测',
     step3: '懒猫网盘目标配置',
@@ -164,7 +164,7 @@ export const i18n = {
     step6: '体验首个备份任务',
     next: '下一步',
     prev: '上一步',
-    finish: '完成配置并开启保护'
+    finish: '返回 POC 首页'
   }
 };
 
@@ -444,4 +444,3 @@ export const INITIAL_ALERTS = [
     resolved: false
   }
 ];
-

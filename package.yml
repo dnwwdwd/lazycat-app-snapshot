@@ -1,17 +1,25 @@
 package: cloud.lazycat.app.backup
 version: 0.1.0
 name: 懒猫应用备份 POC
-description: 验证当前用户可安全读取自己拥有的应用 appvar
-author: Lazycat App Backup contributors
+description: 选择当前用户拥有的应用，探测 appvar 并创建一次只读手动快照
+author: dnwwdwd
+homepage: https://github.com/dnwwdwd/lazycat-app-snapshot
 license: MIT
+min_os_version: "1.5.0"
 
 locales:
-  zh-CN:
+  zh:
     name: 懒猫应用备份 POC
-    description: 验证当前用户可安全读取自己拥有的应用 appvar
-  en-US:
+    description: 选择当前用户拥有的应用，探测 appvar 并创建一次只读手动快照
+  zh_CN:
+    name: 懒猫应用备份 POC
+    description: 选择当前用户拥有的应用，探测 appvar 并创建一次只读手动快照
+  en:
     name: Lazycat App Backup POC
-    description: Verify safe, tenant-isolated read access to the current user's appvar
+    description: Probe an owned appvar and create one tenant-isolated manual read snapshot
+  ja:
+    name: Lazycat App Backup POC
+    description: 現在のユーザーが所有する appvar を検査し、分離された手動読み取りスナップショットを作成します
 
 permissions:
   required:

@@ -10,7 +10,7 @@ This index is navigation only; the linked documents remain the sources of truth.
 | Requirements ledger | `Requirements/LEDGER.md` | Links to active non-bug requirements. |
 | POC requirement | `Requirements/REQ-20260826-001-appvar-read-poc.md` | First gated implementation. |
 | Decision ledger | `Decisions/LEDGER.md` | Architecture and security decisions. |
-| POC decision | `Decisions/DEC-20260826-001-appvar-read-gate.md` | Records the no-bypass release gate. |
+| POC decisions | `Decisions/DEC-20260826-001-appvar-read-gate.md`, `Decisions/DEC-20260826-003-poc-selection-and-snapshot.md`, `Decisions/DEC-20260826-004-platform-application-catalog.md`, `Decisions/DEC-20260826-005-poc-single-instance-warning.md`, `Decisions/DEC-20260826-006-appvar-source-projection-blocked.md` | Records the no-bypass gate, select/probe/manual-snapshot loop, runtime SDK catalog boundary, the POC-only single-instance warning, and the missing formal source projection contract. |
 | Feature-progress ledger | `Progress/LEDGER.md` | Links to feature progress records. |
 | Current progress | `Progress/PROG-REQ-20260826-001-appvar-read-poc.md` | Stage plan, evidence, and current blocker. |
 | Prototype UI source | `lazycat_app_backup_backup.tsx` | Source prototype retained unchanged. |

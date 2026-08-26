@@ -6,7 +6,7 @@
 > 前端技术栈：Next.js + TypeScript  
 > 目标平台：懒猫微服 LPK V2  
 > 支持语言：简体中文（zh-CN）、English（en-US）  
-> 最后更新：2026-08-25  
+> 最后更新：2026-08-26
 > 说明：本文档版本固定为 V1，后续调整只更新“最后更新”和变更记录。
 
 ## 1. 实现结论
@@ -21,6 +21,7 @@ V1 采用“每个懒猫用户一个独立备份应用实例”的多实例部�
 - 前端和后端不提供用户切换、owner 筛选、跨用户查询或管理员全局视图。
 - 目标应用必须是当前用户拥有的多实例应用，并且 `AppInfo.owner` 必须等于当前备份应用实例的 `LAZYCAT_APP_DEPLOY_UID`。
 - 单实例目标应用的 `/lzcapp/var` 可能同时包含多个用户的数据，V1 将其标记为“共享实例不支持”，不读取、不扫描、不备份。
+- 本轮 POC 为验证“选择应用 → 全量探测 → 手动快照”链路，允许单实例目标在页面显示共享数据风险后继续只读探测和一次手动快照；这不改变 V1 的支持边界。
 - 普通文件和目录使用文件级备份。
 - 标准 SQLite 使用 SQLite Online Backup API 创建一致性副本。
 - MySQL、PostgreSQL、MongoDB、Redis 以及其他已知数据库在预检阶段阻断。
@@ -34,12 +35,11 @@ V1 采用“每个懒猫用户一个独立备份应用实例”的多实例部�
 每个备份应用实例就是一个独立租户。租户身份从运行时环境读取：
 
 ```text
-tenant_uid       = LAZYCAT_APP_DEPLOY_UID
-tenant_deploy_id = BACKUP_APP_DEPLOY_ID
-backup_app_id    = LAZYCAT_APP_ID
+tenant_uid    = LAZYCAT_APP_DEPLOY_UID
+backup_app_id = LAZYCAT_APP_ID
 ```
 
-`LAZYCAT_APP_DEPLOY_ID` 属于部署阶段变量。`lzc-manifest.yml` 将它渲染进自定义运行时变量 `BACKUP_APP_DEPLOY_ID`，Go 进程不假设系统会在运行时自动注入原变量。
+当前 POC 只依赖平台注入的 `LAZYCAT_APP_DEPLOY_UID`。开发盒没有稳定注入 `LAZYCAT_APP_DEPLOY_ID`，因此 POC 不把部署 ID 作为启动或健康检查条件。V1 若需要备份应用自身 deploy ID，必须先通过已验证的平台 API 获取，不能依赖未确认的 manifest 变量展开。
 
 `tenant_uid` 是该容器唯一允许服务的懒猫用户。运行期间不得通过前端参数、数据库设置或管理员身份切换租户。
 
@@ -102,6 +102,8 @@ V1 无法按用户安全拆分，暂不提供备份。
 ```
 
 后续只有在目标应用提供用户级导出接口，或平台提供用户级 appvar 快照接口后，才允许支持单实例应用。
+
+POC 例外：服务端仍校验 `owner_uid == tenant_uid`、源路径边界和源目录可读性；单实例扫描成功后返回 `BACKUPABLE` 并附带 `sourceWarning`，手动快照按钮可以执行。该结果只能证明平台源投影可读，不能证明共享 appvar 已完成用户级拆分。
 
 ## 3. V1 能力边界
 
@@ -169,9 +171,11 @@ V1 无法按用户安全拆分，暂不提供备份。
 
 ### 4.2 前端
 
+当前 POC 使用 `apps/web` 中的 Vite + React 静态构建；V1 规划中的 Next.js 依赖和大规模数据组件尚未进入此 POC。
+
 | 类别 | 技术 | 用途 |
 | --- | --- | --- |
-| 框架 | Next.js App Router | 路由、布局和静态导出 |
+| 框架 | Next.js App Router（V1 规划） | 路由、布局和静态导出 |
 | 语言 | TypeScript 严格模式 | 类型安全 |
 | 部署 | Static Export | 由 Go 同源托管，生产环境不运行 Node.js |
 | UI | React + shadcn/ui + Radix UI | 页面组件、弹窗、菜单和无障碍交互 |
@@ -206,18 +210,27 @@ V1 使用一个多实例 LPK。每个用户实例运行一个 Go 进程，Go 进
 
 ```yaml
 package: cloud.lazycat.app.backup
-version: 1.0.0
-name: 懒猫应用备份
-description: 为当前用户的懒猫应用实例创建文件与 SQLite 快照
-min_os_version: <完成真机 POC 后确定>
+version: 0.1.0
+name: 懒猫应用备份 POC
+description: 验证当前用户可安全读取自己拥有的应用 appvar
+author: dnwwdwd
+homepage: https://github.com/dnwwdwd/lazycat-app-snapshot
+license: MIT
+min_os_version: "1.5.0"
 
 locales:
-  zh-CN:
-    name: 懒猫应用备份
-    description: 为当前用户的懒猫应用实例创建文件与 SQLite 快照
-  en-US:
-    name: Lazycat App Backup
-    description: Create file and SQLite snapshots for the current user's app instances
+  zh:
+    name: 懒猫应用备份 POC
+    description: 验证当前用户可安全读取自己拥有的应用 appvar
+  zh_CN:
+    name: 懒猫应用备份 POC
+    description: 验证当前用户可安全读取自己拥有的应用 appvar
+  en:
+    name: Lazycat App Backup POC
+    description: Verify safe, tenant-isolated read access to the current user's appvar
+  ja:
+    name: Lazycat App Backup POC
+    description: 現在のユーザーが所有するアプリの appvar を安全に読み取れることを検証します
 
 permissions:
   required:
@@ -233,18 +246,30 @@ permissions:
 
 ```yaml
 application:
-  subdomain: app-backup
+  subdomain: app-backup-poc
   multi_instance: true
   background_task: true
-  image: <Go 运行镜像或 embed image>
-  environment:
-    BACKUP_APP_DEPLOY_ID: ${LAZYCAT_APP_DEPLOY_ID}
-    BACKUP_APP_DEPLOY_UID: ${LAZYCAT_APP_DEPLOY_UID}
   routes:
-    - /=http://127.0.0.1:8080
+    - /=http://web.cloud.lazycat.app.backup.lzcapp:8080
+
+services:
+  web:
+    image: registry.lazycat.cloud/u30387910/library/debian:cb352a5223b8abc9
+    command: sh /lzcapp/pkg/content/lzc/run.sh
+    environment:
+      - BACKUP_APP_DEPLOY_UID=${LAZYCAT_APP_DEPLOY_UID}
+      - BACKUP_WEB_ROOT=/lzcapp/pkg/content/web
+    healthcheck:
+      test_url: http://127.0.0.1:8080/api/health
 ```
 
-生产配置根据最终镜像形态补充启动命令、健康检查和资源限制，不改变多实例属性。
+POC 构建脚本将前端产物和静态 Linux amd64 Go 二进制放入 LPK 内容目录。运行脚本只启动二进制，不在容器启动时安装依赖或执行前端构建。服务不向 `/lzcapp/pkg/content` 写入数据，也不使用宿主机挂载。
+
+当前 POC 已实现“选择应用 → 递归探测 appvar → 手动读取快照”的服务端闭环。应用目录在 Lazycat 运行时通过官方 Lzc SDK 的 `QueryApplication` 获取，请求固定为空 `deploy_ids`、`only_owner=true`、`ignore_pending_pkg=true`，不传 `other_uid`；服务端还会再次过滤 `AppInfo.owner == tenant_uid`。本地 fixture 仍用于离线测试。浏览器只能提交已展示的 `deploy_id` 和相对文件路径；后端会再次校验 `owner_uid == tenant_uid`、路径未越界和数据库类型。多实例是 V1 的正式入口，单实例在 POC 中只增加共享数据警告。手动快照只写当前用户 `/lzcapp/documents/<tenant_uid>` 下的 POC 目录，响应只返回归档元数据和 SHA-256，不返回文件正文。
+
+真实平台的 `QueryApplication` 目录适配已接入，appvar 投影到源根目录的官方映射仍需在设备上验证。目录可用但没有批准的源投影时，页面显示 `SOURCE_NOT_READY`，不会猜测宿主路径或伪造数据。POC 快照对 SQLite 采用原始读取，V1 的 SQLite Online Backup、调度和恢复能力仍未实现。
+
+设备验证中已观察到两类状态：应用目录查询可以返回当前用户的应用；选中应用后，如果 `appvar.other.read` 没有提供业务容器可见的只读源投影，报告会显示 `platform source resolver is not configured`。这表示平台源解析能力尚未接入当前包，不表示产品页面或应用目录不可做。解析器需要由 Lazycat 提供正式的只读文件投影/API；宿主侧 `/lzcsys/data/appvar/...` 路径不属于业务容器可用接口，不能作为实现替代。
 
 ### 5.3 后台运行限制
 
@@ -273,7 +298,6 @@ Go 进程启动时读取并冻结：
 ```text
 LAZYCAT_APP_DEPLOY_UID
 BACKUP_APP_DEPLOY_UID
-BACKUP_APP_DEPLOY_ID
 LAZYCAT_APP_ID
 LAZYCAT_BOX_DOMAIN
 ```
@@ -282,8 +306,8 @@ LAZYCAT_BOX_DOMAIN
 
 - `LAZYCAT_APP_DEPLOY_UID` 必须非空。
 - `BACKUP_APP_DEPLOY_UID` 必须等于 `LAZYCAT_APP_DEPLOY_UID`。
-- 当前应用必须以多实例运行。
-- `BACKUP_APP_DEPLOY_ID` 必须非空。
+- 当前备份应用必须以多实例运行；目标应用是否多实例由报告展示，POC 允许单实例进入只读验证并显示警告。
+- POC 不要求 `LAZYCAT_APP_DEPLOY_ID` 或 `BACKUP_APP_DEPLOY_ID`。
 
 不满足时进入只读诊断页面，不启动调度器和 Worker。
 
@@ -305,9 +329,11 @@ LAZYCAT_BOX_DOMAIN
 - `other_uid` 始终为空。
 - `only_owner` 设置为 `true`。
 - 返回结果必须再次检查 `AppInfo.owner == tenant_uid`。
-- 返回的单实例应用只用于展示“不支持”状态，不进入 SourceResolver。
+- V1 返回的单实例应用只用于展示“不支持”状态，不进入 SourceResolver；本轮 POC 可将单实例交给只读源探测器，并在报告中附带共享数据警告。
 
 真机 POC 必须确认 Go 后台通过运行时 SDK 凭据调用 `QueryApplication` 时，系统识别的当前用户就是 `LAZYCAT_APP_DEPLOY_UID`。如果无法建立该用户上下文，V1 不得改用管理员 `other_uid` 兜底。
+
+当前 SDK 版本不会仅凭应用 deploy UID 推导 API 用户上下文。POC 调用 SDK 的 `WithRealUID(tenant_uid)`，将启动时冻结的租户 UID 放入 `X-Hc-User-Id` 元数据；该值不来自浏览器，也不通过 `QueryApplication.other_uid` 传递。
 
 ## 7. 应用实例发现
 
@@ -396,6 +422,8 @@ owner_uid == tenant_uid
 multi_instance == true
 source_deploy_id 在当前用户最新 QueryApplication 结果中存在
 ```
+
+上面是 V1 SourceResolver 的正式约束。POC 在 `multi_instance == false` 时保留租户、路径和只读校验，返回共享数据告警并允许一次只读快照；该例外不进入 V1 能力声明。
 
 ### 8.3 SourceResolver 输出
 
@@ -1084,7 +1112,7 @@ SNAPSHOT_COMMIT_FAILED
 
 以下项目全部通过后，V1 才进入正式开发完成阶段：
 
-1. 多实例备份应用能获得非空 `LAZYCAT_APP_DEPLOY_UID`，并能通过 manifest 渲染得到非空 `BACKUP_APP_DEPLOY_ID`。
+1. 多实例备份应用能获得非空 `LAZYCAT_APP_DEPLOY_UID`，并能通过包路由访问自己的服务。
 2. 普通用户可以访问自己的备份应用实例，不依赖管理员页面。
 3. `X-HC-User-ID` 与 deploy UID 一致。
 4. Go 后台 Lzc SDK 查询默认绑定当前 deploy UID。

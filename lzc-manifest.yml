@@ -2,9 +2,20 @@ application:
   subdomain: app-backup-poc
   multi_instance: true
   background_task: true
-  image: embed:app-runtime
-  environment:
-    BACKUP_APP_DEPLOY_ID: ${LAZYCAT_APP_DEPLOY_ID}
-    BACKUP_APP_DEPLOY_UID: ${LAZYCAT_APP_DEPLOY_UID}
   routes:
-    - /=http://127.0.0.1:8080
+    - /=http://web.cloud.lazycat.app.backup.lzcapp:8080
+
+services:
+  web:
+    image: registry.lazycat.cloud/u30387910/library/debian:cb352a5223b8abc9
+    user: "0"
+    command: sh /lzcapp/pkg/content/lzc/run.sh
+    environment:
+      - BACKUP_APP_DEPLOY_UID=${LAZYCAT_APP_DEPLOY_UID}
+      - BACKUP_WEB_ROOT=/lzcapp/pkg/content/web
+    healthcheck:
+      test_url: http://127.0.0.1:8080/api/health
+      start_period: 10s
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -11,6 +11,7 @@ coverage/
 
 # Lazycat/package build output
 pkgout/
+lzc-dist/
 *.lpk
 *.tar
 *.tar.gz

@@ -12,7 +12,9 @@ import {
 } from 'lucide-react';
 import { getStorageColor, i18n, INITIAL_ALERTS, INITIAL_APPS, INITIAL_BATCHES, INITIAL_PLANS, INITIAL_SNAPSHOTS } from '../data/prototype';
 export function useAppController() {
-  const [currentRoute, setCurrentRoute] = useState('overview');
+  // The package is currently a POC. Open the real application-probe flow
+  // directly instead of presenting the retained V1 prototype dashboard first.
+  const [currentRoute, setCurrentRoute] = useState('setup');
   const [routeParams, setRouteParams] = useState({});
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
