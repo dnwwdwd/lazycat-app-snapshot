@@ -16,3 +16,7 @@ Use the PDD's per-user, multi-instance model. The POC may read only a target tha
 ## Gate and rollback
 
 If either user can enumerate, open, or read the other user's source, or if the source projection is writable, stop the V1 backup-engine path. Remove the POC package from the test box if needed; do not introduce a privileged workaround.
+
+## Read-only evidence policy
+
+The POC does not issue create, modify, or delete requests against a target appvar, including disposable fixtures. Read-only evidence is the source mount's read-only flag, the absence of write endpoints and target-write code, and the two-user platform logs. A writable mount fails this gate without attempting a compensating write test.
