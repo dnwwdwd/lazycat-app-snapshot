@@ -238,13 +238,13 @@ application:
   background_task: true
   image: <Go 运行镜像或 embed image>
   environment:
-    BACKUP_APP_DEPLOY_ID: ${LAZYCAT_APP_DEPLOY_ID}
-    BACKUP_APP_DEPLOY_UID: ${LAZYCAT_APP_DEPLOY_UID}
+    BACKUP_APP_DEPLOY_ID: "{{ .S.DeployID }}"
+    BACKUP_APP_DEPLOY_UID: "{{ .S.DeployUID }}"
   routes:
     - /=http://127.0.0.1:8080
 ```
 
-生产配置根据最终镜像形态补充启动命令、健康检查和资源限制，不改变多实例属性。
+manifest 使用 Go `text/template` 渲染；不得假设 `${...}` 会从运行时环境变量展开。生产配置根据最终镜像形态补充启动命令、健康检查和资源限制，不改变多实例属性。
 
 ### 5.3 后台运行限制
 
@@ -414,9 +414,19 @@ source_deploy_id 在当前用户最新 QueryApplication 结果中存在
 2. 用户 B 的目标 `deploy_id` 传给用户 A 的 SourceResolver 时必须失败。
 3. 用户 A 无法通过目录遍历列出用户 B 的 appvar 根。
 4. 用户 A 无法 `stat`、打开或读取用户 B 的源文件。
-5. 用户 A 的源目录只读，无法创建、修改和删除。
+5. 用户 A 的源目录挂载标志为只读，且 POC 服务不提供任何创建、修改或删除源文件的接口。
 
 如果 `appvar.other.read` 在多实例容器中暴露全局可枚举 appvar，且平台没有提供用户级强制过滤或实例句柄，V1 不发布用户版。仅靠前端隐藏或 Go 业务过滤不足以宣称系统级用户隔离。
+
+### 8.4.1 POC 诊断接口
+
+在真机 SourceResolver 映射尚未确认前，POC 只能使用服务端预配的夹具适配器，默认拒绝未知 `deploy_id`。它不读取浏览器提供的绝对路径、owner UID 或存储 UID，也不能作为 V1 SourceResolver 的替代品。
+
+- `GET /api/poc/identity`：报告不含源路径的身份、权限声明和夹具状态；运行时身份异常时不返回 tenant UID。
+- `GET /api/poc/source?deploy_id=`：仅列出已验证夹具根目录的名称、类型、大小及只读挂载状态。
+- `GET /api/poc/read?deploy_id=&path=`：只接受相对常规文件路径；最多读取 64 KiB，并将 SHA-256 标记为完整或前缀哈希。
+
+所有 POC 浏览器路由要求 `X-Forwarded-By: lzc-ingress` 和 `X-HC-User-ID`；已配置身份时后者必须等于冻结的 tenant UID。接口永不返回文件正文、绝对源路径或跨用户对象。
 
 ### 8.5 路径安全
 

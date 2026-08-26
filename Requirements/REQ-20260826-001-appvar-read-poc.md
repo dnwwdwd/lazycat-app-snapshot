@@ -6,12 +6,14 @@ Create a minimal multi-instance LPK V2 application that declares only `appvar.ot
 
 ## Scope and exclusions
 
-- In scope: package metadata, multi-instance runtime, the existing prototype UI split into an interactive frontend, identity diagnostics, a read-only source probe, and the PDD two-user acceptance matrix.
+- In scope: package metadata, multi-instance runtime, a dedicated interactive POC diagnostics page, identity diagnostics, a read-only source probe, and the PDD two-user acceptance matrix.
 - Out of scope: a backup engine, scheduler, control database, visual redesign or new frontend behavior, restore, write access, cross-user administration, and a host-mount workaround.
 
 ## Impact and safety boundary
 
 The POC touches platform permissions, multi-instance identity, and another application’s data. Source identity is server-side only: the browser never submits an absolute path, owner UID, or storage UID. The UI presents the resulting tenant, permission, source-projection, directory and hash states. The probe emits names, sizes, and hashes only; it never returns file bodies and never attempts a target write.
+
+The fixture adapter is intentionally not a platform SourceResolver: it accepts only a server-provided disposable fixture mapping and rejects all other deploy IDs. Its local results are implementation evidence only; real-device ownership and isolation rows remain mandatory.
 
 ## Acceptance matrix
 

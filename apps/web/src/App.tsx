@@ -1,6 +1,5 @@
-﻿import { AppShell } from './AppShell';
-import { useAppController } from './hooks/useAppController';
+import { PocDiagnosticsApp } from './poc/PocDiagnosticsApp';
 
 export default function App() {
-  return <AppShell {...useAppController()} />;
+  return <PocDiagnosticsApp />;
 }

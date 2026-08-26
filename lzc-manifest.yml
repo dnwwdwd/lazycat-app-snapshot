@@ -4,7 +4,7 @@ application:
   background_task: true
   image: embed:app-runtime
   environment:
-    BACKUP_APP_DEPLOY_ID: ${LAZYCAT_APP_DEPLOY_ID}
-    BACKUP_APP_DEPLOY_UID: ${LAZYCAT_APP_DEPLOY_UID}
+    BACKUP_APP_DEPLOY_ID: "{{ .S.DeployID }}"
+    BACKUP_APP_DEPLOY_UID: "{{ .S.DeployUID }}"
   routes:
     - /=http://127.0.0.1:8080
