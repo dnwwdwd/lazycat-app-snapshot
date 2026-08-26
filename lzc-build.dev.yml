@@ -1,0 +1,8 @@
+package_override:
+  package: cloud.lazycat.app.backup.poc.dev
+envs:
+  - DEV_MODE=1
+images:
+  app-runtime:
+    context: ./
+    dockerfile: ./deploy/docker/Dockerfile

@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Frontend build output and bundler caches
+dist/
+build/
+out/
+.vite/
+.cache/
+coverage/
+
+# Lazycat/package build output
+pkgout/
+*.lpk
+*.tar
+*.tar.gz
+*.zip
+
+# Go build/test output
+bin/
+*.exe
+*.test
+*.prof
+
+# Local environment and logs
+.env
+.env.*
+!.env.example
+*.log
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Temporary QA artifacts
+tmp/
+temp/
+screenshots/

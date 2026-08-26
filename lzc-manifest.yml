@@ -1,0 +1,10 @@
+application:
+  subdomain: app-backup-poc
+  multi_instance: true
+  background_task: true
+  image: embed:app-runtime
+  environment:
+    BACKUP_APP_DEPLOY_ID: ${LAZYCAT_APP_DEPLOY_ID}
+    BACKUP_APP_DEPLOY_UID: ${LAZYCAT_APP_DEPLOY_UID}
+  routes:
+    - /=http://127.0.0.1:8080

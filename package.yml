@@ -1,0 +1,21 @@
+package: cloud.lazycat.app.backup
+version: 0.1.0
+name: 懒猫应用备份 POC
+description: 验证当前用户可安全读取自己拥有的应用 appvar
+author: Lazycat App Backup contributors
+license: MIT
+
+locales:
+  zh-CN:
+    name: 懒猫应用备份 POC
+    description: 验证当前用户可安全读取自己拥有的应用 appvar
+  en-US:
+    name: Lazycat App Backup POC
+    description: Verify safe, tenant-isolated read access to the current user's appvar
+
+permissions:
+  required:
+    - appvar.other.read
+    - document.private
+  optional:
+    - user.notify

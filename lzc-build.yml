@@ -1,0 +1,6 @@
+manifest: ./lzc-manifest.yml
+pkgout: ./
+images:
+  app-runtime:
+    context: ./
+    dockerfile: ./deploy/docker/Dockerfile
