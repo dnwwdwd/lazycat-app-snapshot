@@ -44,7 +44,7 @@ export function StorageView({ t, snapshots }) {
         </p>
 
         <div className="bg-slate-900 text-slate-200 rounded-xl p-4 font-mono text-xs leading-relaxed overflow-x-auto shadow-inner">
-          <div>/lzcapp/documents/&lt;storage_uid&gt;/LazycatAppBackup/</div>
+          <div>/lzcapp/document/LazycatAppBackup/</div>
           <div className="pl-4 text-emerald-400">├── 20260825T020000.000Z/ <span className="text-slate-500">(批次计划 UTC 时间)</span></div>
           <div className="pl-8 text-teal-300">├── dep-notus-8839a/ <span className="text-slate-500">(Deploy ID)</span></div>
           <div className="pl-12 text-emerald-300">├── Notus笔记__cloud.lazycat.notus/</div>
@@ -60,4 +60,3 @@ export function StorageView({ t, snapshots }) {
     </div>
   );
 }
-

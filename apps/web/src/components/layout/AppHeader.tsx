@@ -1,4 +1,4 @@
-import { AlertOctagon, Menu, RefreshCw, ShieldCheck, Zap } from 'lucide-react';
+import { AlertOctagon, Menu, RefreshCw, Zap } from 'lucide-react';
 
 export function AppHeader({ isMobileMenuOpen, setIsMobileMenuOpen, navigateTo, t, runningJobs, stats }) {
   return (
@@ -8,8 +8,8 @@ export function AppHeader({ isMobileMenuOpen, setIsMobileMenuOpen, navigateTo, t
           <Menu className="w-5 h-5" />
         </button>
         <div className="flex items-center space-x-3 cursor-pointer group" onClick={() => navigateTo('overview')}>
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-600 via-teal-600 to-emerald-500 flex items-center justify-center shadow-xs text-white group-hover:scale-105 transition-transform">
-            <ShieldCheck className="w-5 h-5" />
+          <div className="w-9 h-9 rounded-xl overflow-hidden shadow-xs group-hover:scale-105 transition-transform">
+            <img src="/lazycat-backup-icon.png" alt="" className="h-full w-full object-cover" />
           </div>
           <div>
             <div className="font-bold text-slate-900 text-sm tracking-tight flex items-center gap-2">

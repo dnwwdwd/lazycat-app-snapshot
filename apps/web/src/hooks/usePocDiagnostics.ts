@@ -6,6 +6,7 @@ type PocIdentity = {
   sourceConfigured: boolean;
   catalogConfigured: boolean;
   requiredPermission: string;
+  providerStatus?: string;
 };
 
 type SourceEntry = {

@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Database, File, Folder, HardDrive, RefreshCw, ShieldCheck, XCircle, Zap } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Database, File, Folder, HardDrive, RefreshCw, XCircle, Zap } from 'lucide-react';
 import { usePocApplications } from '../../hooks/usePocApplications';
 import { usePocDiagnostics } from '../../hooks/usePocDiagnostics';
+import { PLATFORM_RESOLVER_NO_PROJECTION, RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE } from '../../poc/api';
 
 const statusText: Record<string, string> = {
   BACKUPABLE: '可创建快照',
   NO_DATA: '无数据',
   UNSUPPORTED_DATABASE: '数据库阻断',
   SOURCE_NOT_READY: '源目录未就绪',
+  [PLATFORM_RESOLVER_NO_PROJECTION]: '平台未提供只读源',
+  [RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE]: '运行时 appvar 投影不可见',
+  SOURCE_CONTRACT_UNSUPPORTED: '平台读取接口不支持',
+  SOURCE_NOT_READONLY: '源不是只读',
   PERMISSION_DENIED: '读取被拒绝',
 };
 
@@ -22,6 +27,32 @@ function statusClass(status: string) {
   if (status === 'BACKUPABLE') return 'bg-emerald-50 text-emerald-800 border-emerald-200';
   if (status === 'UNSUPPORTED_DATABASE' || status === 'PERMISSION_DENIED') return 'bg-rose-50 text-rose-800 border-rose-200';
   return 'bg-amber-50 text-amber-800 border-amber-200';
+}
+
+function sourceErrorText(error: string) {
+  if (error === PLATFORM_RESOLVER_NO_PROJECTION) {
+    return '应用目录已接通，但当前设备没有把这个 appvar 以业务容器可见的只读源提供给本应用。请让 Lazycat 运行时提供正式的 deploy_id 绑定只读目录、文件句柄或流式读取接口。';
+  }
+  if (error.startsWith(RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE)) {
+    return 'LZCOS 运行时 appvar 投影不可见，请确认 PERM_OTHER_APP_DATA_ADMIN 已授权并重建应用实例。';
+  }
+  if (error.startsWith('SOURCE_NOT_READY')) {
+    return '当前应用的数据源尚未就绪，请检查应用目录和平台源配置。';
+  }
+  if (error.startsWith('SOURCE_CONTRACT_UNSUPPORTED')) {
+    return '当前 Lazycat SDK 没有提供按 deploy_id 读取 appvar 的正式接口。';
+  }
+  if (error.startsWith('SOURCE_NOT_READONLY')) {
+    return '平台提供的 appvar 源没有通过只读校验，读取和快照已停止。';
+  }
+  return error;
+}
+
+function readOnlyModeText(mode?: string) {
+  if (mode === 'service-enforced') return '应用层只读（兼容投影）';
+  if (mode === 'filesystem') return '内核只读挂载';
+  if (mode === 'fixture') return '测试夹具';
+  return mode || '待验证';
 }
 
 export function SetupWizardView() {
@@ -67,7 +98,7 @@ export function SetupWizardView() {
       <header className="border-b border-slate-800 bg-slate-950/95 px-5 py-4 sm:px-8">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500 text-slate-950"><ShieldCheck className="h-5 w-5" /></div>
+            <div className="h-10 w-10 overflow-hidden rounded-xl"><img src="/lazycat-backup-icon.png" alt="" className="h-full w-full object-cover" /></div>
             <div>
               <div className="flex items-center gap-2 text-sm font-bold"><span>懒猫应用备份</span><span className="rounded bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-bold tracking-wider text-amber-300">POC</span></div>
               <div className="text-xs text-slate-400">选择应用 → 全量探测 appvar / 数据库 → 手动快照</div>
@@ -88,7 +119,7 @@ export function SetupWizardView() {
           <Diagnostic label="当前租户" value={identity?.tenantUID || '未注入'} ok={Boolean(identity?.identityConfigured)} />
           <Diagnostic label="权限" value="appvar.other.read" ok={identity?.requiredPermission === 'appvar.other.read'} />
           <Diagnostic label="应用目录" value={identity?.catalogConfigured ? '已接入目录' : '等待 resolver'} ok={Boolean(identity?.catalogConfigured)} />
-          <Diagnostic label="appvar 源投影" value={identity?.sourceConfigured ? '已提供' : '未配置'} ok={Boolean(identity?.sourceConfigured)} />
+          <Diagnostic label="appvar 源投影" value={identity?.providerStatus === PLATFORM_RESOLVER_NO_PROJECTION ? '平台未提供只读源' : identity?.providerStatus === RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE ? '运行时投影不可见' : identity?.providerStatus === 'READY' || identity?.providerStatus === 'FIXTURE_READY' ? '已提供' : '未配置'} ok={identity?.providerStatus === 'READY' || identity?.providerStatus === 'FIXTURE_READY'} />
         </section>
 
         {(identityError || applicationsError) && (
@@ -116,11 +147,11 @@ export function SetupWizardView() {
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
             {!selected && <div className="flex min-h-[360px] flex-col items-center justify-center text-center text-slate-500"><Zap className="mb-3 h-7 w-7 text-emerald-500" /><div className="text-sm font-semibold text-slate-300">选择一个应用开始全量探测</div><div className="mt-1 max-w-md text-xs leading-5">服务端会重新校验 deploy ID、owner、多实例状态和源目录边界，浏览器不会提交绝对路径。</div></div>}
             {selected && <>
-              <div className="flex flex-col justify-between gap-3 border-b border-slate-800 pb-4 sm:flex-row sm:items-start"><div><div className="flex items-center gap-2"><h2 className="text-base font-bold">{selected.name || selected.appid}</h2><span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${statusClass(selected.status)}`}>{statusText[selected.status] || selected.status}</span></div><div className="mt-1 font-mono text-[10px] text-slate-500">{selected.appid} · deploy_id={selected.deployID} · owner={selected.ownerUID}</div></div><button disabled={selected.status !== 'BACKUPABLE' || snapshotLoading} title={selected.status === 'SOURCE_NOT_READY' ? '平台尚未提供 appvar 只读源，暂时无法生成快照' : undefined} onClick={() => void createSnapshot()} className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500"><Zap className="h-3.5 w-3.5" />{snapshotLoading ? '快照生成中…' : '执行手动快照'}</button></div>
+              <div className="flex flex-col justify-between gap-3 border-b border-slate-800 pb-4 sm:flex-row sm:items-start"><div><div className="flex items-center gap-2"><h2 className="text-base font-bold">{selected.name || selected.appid}</h2><span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${statusClass(selected.status)}`}>{statusText[selected.status] || selected.status}</span></div><div className="mt-1 font-mono text-[10px] text-slate-500">{selected.appid} · deploy_id={selected.deployID} · owner={selected.ownerUID}</div></div><button disabled={selected.status !== 'BACKUPABLE' || snapshotLoading} title={selected.status === PLATFORM_RESOLVER_NO_PROJECTION || selected.status === 'SOURCE_NOT_READY' ? '平台尚未提供 appvar 只读源，暂时无法生成快照' : undefined} onClick={() => void createSnapshot()} className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500"><Zap className="h-3.5 w-3.5" />{snapshotLoading ? '快照生成中…' : '执行手动快照'}</button></div>
               {selected.sourceWarning && <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-400/10 p-3 text-xs leading-5 text-amber-200"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" /><span>{selected.sourceWarning}</span></div>}
-              {selected.sourceError && <div className="mt-3 rounded-lg bg-amber-400/10 p-3 text-xs leading-5 text-amber-200"><div>{selected.sourceError === 'platform source resolver is not configured' ? '平台已返回这个应用的目录信息，但没有把 appvar 以业务容器可见的只读源投影提供出来。当前包不会猜宿主路径，也不会添加宿主挂载。' : selected.sourceError}</div><div className="mt-1 text-[10px] text-amber-200/70">这属于 Lazycat 平台 source resolver 配置缺口；应用目录本身已经接通。源投影接通后，状态会变为“可创建快照”，手动备份按钮才会启用。</div></div>}
+              {selected.sourceError && <div className="mt-3 rounded-lg bg-amber-400/10 p-3 text-xs leading-5 text-amber-200"><div>{sourceErrorText(selected.sourceError)}</div>{(selected.status === PLATFORM_RESOLVER_NO_PROJECTION || selected.status === RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE) && <div className="mt-1 text-[10px] text-amber-200/70">请确认兼容权限已授权并重建应用实例；服务不会猜宿主路径，也不会添加宿主挂载。</div>}</div>}
               {!selected.sourceError && !selected.readOnly && <div className="mt-3 rounded-lg bg-amber-400/10 p-3 text-xs text-amber-200">当前源目录所在文件系统可写；POC 过程不会向源目录写入内容。真机验收仍需确认 `appvar.other.read` 投影本身为只读。</div>}
-              <div className="grid grid-cols-2 gap-2 py-4 sm:grid-cols-5"><Metric label="目录条目" value={String(selected.entryCount)} /><Metric label="文件" value={String(selected.fileCount)} /><Metric label="总大小" value={formatBytes(selected.totalBytes)} /><Metric label="跳过" value={String(selected.skippedCount)} /><Metric label="源只读" value={selected.readOnly ? '是' : '否'} /></div>
+              <div className="grid grid-cols-2 gap-2 py-4 sm:grid-cols-5"><Metric label="目录条目" value={String(selected.entryCount)} /><Metric label="文件" value={String(selected.fileCount)} /><Metric label="总大小" value={formatBytes(selected.totalBytes)} /><Metric label="跳过" value={String(selected.skippedCount)} /><Metric label="源只读" value={selected.readOnly ? readOnlyModeText(selected.readOnlyMode) : '否'} /></div>
               <div className="grid gap-4 xl:grid-cols-2">
                 <div className="overflow-hidden rounded-xl border border-slate-800"><div className="flex items-center gap-2 border-b border-slate-800 px-3 py-2 text-xs font-semibold"><Folder className="h-3.5 w-3.5 text-emerald-400" />appvar 全量目录（最多 200 条）</div><div className="max-h-80 overflow-y-auto divide-y divide-slate-800">{selected.entries.slice(0, 200).map(entry => <div key={`${entry.type}:${entry.name}`} className="flex items-center justify-between gap-3 px-3 py-2 text-[11px]"><span className="flex min-w-0 items-center gap-2 truncate font-mono text-slate-300">{entry.type === 'directory' ? <Folder className="h-3 w-3 shrink-0 text-emerald-400" /> : <File className="h-3 w-3 shrink-0 text-slate-500" />}{entry.name}</span><span className="shrink-0 text-slate-500">{entry.type} · {formatBytes(entry.size)}</span></div>)}{selected.entries.length === 0 && <div className="p-4 text-xs text-slate-500">源目录为空</div>}</div></div>
                 <div className="space-y-4"><div className="overflow-hidden rounded-xl border border-slate-800"><div className="flex items-center gap-2 border-b border-slate-800 px-3 py-2 text-xs font-semibold"><Database className="h-3.5 w-3.5 text-emerald-400" />数据库识别</div>{selected.databaseFindings.length === 0 ? <div className="p-3 text-xs text-slate-500">未发现数据库特征</div> : <div className="divide-y divide-slate-800">{selected.databaseFindings.map(finding => <div key={`${finding.type}:${finding.path}`} className="flex items-center justify-between gap-3 px-3 py-2 text-[11px]"><span className="truncate font-mono text-slate-300">{finding.path}</span><span className={finding.supported ? 'shrink-0 text-emerald-300' : 'shrink-0 text-rose-300'}>{finding.type} · {finding.supported ? '支持' : '阻断'}</span></div>)}</div>}</div>
