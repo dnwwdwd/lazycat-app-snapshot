@@ -1,6 +1,6 @@
 // Package main is a deliberately small, tenant-isolated backup POC. It lets a
 // user select an application, inspect its appvar metadata/database signatures,
-// and create one read-only source snapshot in the user's private documents.
+// and create one read-only source snapshot in the current user's Lazycat Drive.
 // It is not the V1 scheduler or recovery engine.
 package main
 
@@ -30,23 +30,33 @@ import (
 )
 
 const (
-	maxProbeBytes    = 64 * 1024
-	maxScanEntries   = 10000
-	defaultWebRoot   = "/lzcapp/pkg/content/web"
-	defaultDocFolder = "LazycatAppBackup"
-	statfsReadOnly   = 1
+	maxProbeBytes                      = 64 * 1024
+	maxScanEntries                     = 10000
+	defaultWebRoot                     = "/lzcapp/pkg/content/web"
+	defaultDocumentRoot                = "/lzcapp/document"
+	defaultDocFolder                   = "LazycatAppBackup"
+	statfsReadOnly                     = 1
+	platformResolverNoProjectionStatus = "PLATFORM_RESOLVER_FOUND_BUT_NO_CALLER_VISIBLE_PROJECTION"
 )
 
 type pocConfig struct {
-	tenantUID      string
-	backupAppID    string
-	sourceRoot     string
-	sourceOwnerUID string
-	sourceDeployID string
-	sourceAppID    string
-	sourceAppName  string
-	sourceVersion  string
-	sourceMulti    bool
+	tenantUID               string
+	backupAppID             string
+	sourceRoot              string
+	sourceOwnerUID          string
+	sourceDeployID          string
+	sourceAppID             string
+	sourceAppName           string
+	sourceVersion           string
+	sourceMulti             bool
+	sourceProjectionRoot    string
+	sourceProjectionMode    string
+	sourceProjectionLayout  string
+	sourceProjectionVersion string
+	sourceSDKMethod         string
+	// allowNonstandardSourceRoot is used only by local tests; production
+	// runtime-appvar mode is pinned to the LZCOS container projection path.
+	allowNonstandardSourceRoot bool
 	// multiInstance is retained for the original unit-test/config contract.
 	multiInstance    bool
 	applicationsFile string
@@ -100,6 +110,7 @@ type applicationReport struct {
 	SourceError      string            `json:"sourceError,omitempty"`
 	SourceProjection string            `json:"sourceProjection,omitempty"`
 	SourceAdapter    string            `json:"sourceAdapterVersion,omitempty"`
+	ReadOnlyMode     string            `json:"readOnlyMode,omitempty"`
 	SourceDevice     uint64            `json:"sourceDevice,omitempty"`
 	SourceInode      uint64            `json:"sourceInode,omitempty"`
 	SourceVerifiedAt string            `json:"sourceVerifiedAt,omitempty"`
@@ -128,36 +139,72 @@ type snapshotRequest struct {
 	DeployID string `json:"deploy_id"`
 }
 
+type sourceCapability struct {
+	CatalogReady       bool   `json:"catalogReady"`
+	PermissionDeclared bool   `json:"permissionDeclared"`
+	ProviderStatus     string `json:"providerStatus"`
+	ProviderKind       string `json:"providerKind"`
+	ProviderVersion    string `json:"providerVersion"`
+	SDKMethod          string `json:"sdkMethod"`
+	MountConfigured    bool   `json:"mountConfigured"`
+	IsolationVerified  bool   `json:"isolationVerified"`
+	ReadOnlyMode       string `json:"readOnlyMode,omitempty"`
+	BlockingReason     string `json:"blockingReason"`
+}
+
 func configFromEnv() pocConfig {
 	webRoot := os.Getenv("BACKUP_WEB_ROOT")
 	if webRoot == "" {
 		webRoot = defaultWebRoot
 	}
-	tenantUID := os.Getenv("BACKUP_APP_DEPLOY_UID")
+	tenantUID := configuredEnv("BACKUP_APP_DEPLOY_UID")
 	if tenantUID == "" {
 		// Keep the package usable when the manifest expansion is unavailable in
 		// a local runner. The deploy ID is deliberately not used for identity.
-		tenantUID = os.Getenv("LAZYCAT_APP_DEPLOY_UID")
+		tenantUID = configuredEnv("LAZYCAT_APP_DEPLOY_UID")
 	}
-	documentRoot := os.Getenv("BACKUP_DOCUMENT_ROOT")
+	documentRoot := configuredEnv("BACKUP_DOCUMENT_ROOT")
 	if documentRoot == "" && tenantUID != "" {
-		documentRoot = filepath.Join("/lzcapp/documents", tenantUID)
+		// document.write exposes the current user's normal Lazycat Drive root.
+		// Keep the application-private document mount out of the backup
+		// destination; document.write exposes the user's normal Drive view.
+		documentRoot = defaultDocumentRoot
+	}
+	sourceProjectionMode := configuredEnv("BACKUP_POC_APPVAR_MODE")
+	sourceProjectionRoot := configuredEnv("BACKUP_POC_APPVAR_ROOT")
+	if sourceProjectionMode == "runtime-appvar" && sourceProjectionRoot == "" {
+		// This is a fixed path in the business container created by the LZCOS
+		// compatibility permission. It is not a host-path fallback.
+		sourceProjectionRoot = defaultRuntimeAppvarRoot
 	}
 	return pocConfig{
-		tenantUID:        tenantUID,
-		backupAppID:      os.Getenv("LAZYCAT_APP_ID"),
-		sourceRoot:       os.Getenv("BACKUP_POC_SOURCE_ROOT"),
-		sourceOwnerUID:   os.Getenv("BACKUP_POC_SOURCE_OWNER_UID"),
-		sourceDeployID:   os.Getenv("BACKUP_POC_SOURCE_DEPLOY_ID"),
-		sourceAppID:      os.Getenv("BACKUP_POC_SOURCE_APP_ID"),
-		sourceAppName:    os.Getenv("BACKUP_POC_SOURCE_APP_NAME"),
-		sourceVersion:    os.Getenv("BACKUP_POC_SOURCE_VERSION"),
-		sourceMulti:      os.Getenv("BACKUP_POC_SOURCE_MULTI_INSTANCE") == "true",
-		multiInstance:    os.Getenv("BACKUP_POC_SOURCE_MULTI_INSTANCE") == "true",
-		applicationsFile: os.Getenv("BACKUP_POC_APPLICATIONS_FILE"),
-		documentRoot:     documentRoot,
-		webRoot:          webRoot,
+		tenantUID:               tenantUID,
+		backupAppID:             os.Getenv("LAZYCAT_APP_ID"),
+		sourceRoot:              os.Getenv("BACKUP_POC_SOURCE_ROOT"),
+		sourceOwnerUID:          os.Getenv("BACKUP_POC_SOURCE_OWNER_UID"),
+		sourceDeployID:          os.Getenv("BACKUP_POC_SOURCE_DEPLOY_ID"),
+		sourceAppID:             os.Getenv("BACKUP_POC_SOURCE_APP_ID"),
+		sourceAppName:           os.Getenv("BACKUP_POC_SOURCE_APP_NAME"),
+		sourceVersion:           os.Getenv("BACKUP_POC_SOURCE_VERSION"),
+		sourceMulti:             os.Getenv("BACKUP_POC_SOURCE_MULTI_INSTANCE") == "true",
+		sourceProjectionRoot:    sourceProjectionRoot,
+		sourceProjectionMode:    sourceProjectionMode,
+		sourceProjectionLayout:  configuredEnv("BACKUP_POC_APPVAR_LAYOUT"),
+		sourceProjectionVersion: configuredEnv("BACKUP_POC_PROVIDER_VERSION"),
+		sourceSDKMethod:         configuredEnv("BACKUP_POC_SDK_METHOD"),
+		multiInstance:           os.Getenv("BACKUP_POC_SOURCE_MULTI_INSTANCE") == "true",
+		applicationsFile:        os.Getenv("BACKUP_POC_APPLICATIONS_FILE"),
+		documentRoot:            documentRoot,
+		webRoot:                 webRoot,
 	}
+}
+
+func configuredEnv(name string) string {
+	value := strings.TrimSpace(os.Getenv(name))
+	if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
+		return ""
+	}
+	return value
 }
 
 func (c pocConfig) ready() bool { return c.tenantUID != "" }
@@ -166,11 +213,116 @@ func (c pocConfig) sourceConfigured() bool {
 	if c.resolver != nil {
 		return true
 	}
-	if c.applicationsFile != "" {
+	if c.sourceProjectionRoot != "" {
 		return true
 	}
+	if c.fixtureCatalogConfigured() {
+		return true
+	}
+	return false
+}
+
+func (c pocConfig) sourceCapability() sourceCapability {
+	capability := sourceCapability{
+		CatalogReady:       c.ready() && c.catalogConfigured(),
+		PermissionDeclared: true,
+		ProviderStatus:     "SOURCE_NOT_READY",
+		ProviderKind:       "unavailable",
+		MountConfigured:    c.sourceProjectionRoot != "",
+		IsolationVerified:  false,
+		BlockingReason:     "NO_OFFICIAL_APPVAR_SOURCE_CONTRACT",
+	}
+	if c.resolver != nil {
+		capability.ProviderKind = "custom"
+		capability.ProviderStatus = "READY"
+		capability.BlockingReason = ""
+		return capability
+	}
+	if method := strings.TrimSpace(c.sourceSDKMethod); method != "" && c.sourceProjectionRoot == "" {
+		capability.ProviderKind = "sdk"
+		capability.SDKMethod = method
+		capability.ProviderVersion = c.sourceProjectionVersion
+		capability.BlockingReason = "SOURCE_CONTRACT_UNSUPPORTED"
+		return capability
+	}
+	if c.sourceProjectionRoot != "" {
+		if c.sourceProjectionMode == "runtime-appvar" {
+			capability.ProviderKind = "runtime-appvar"
+			capability.ProviderVersion = c.sourceProjectionVersion
+			if capability.ProviderVersion == "" {
+				capability.ProviderVersion = "lzcos-runtime-appvar-v1"
+			}
+			capability.ReadOnlyMode = "service-enforced"
+			if filepath.Clean(c.sourceProjectionRoot) == defaultRuntimeAppvarRoot || c.allowNonstandardSourceRoot {
+				if _, err := canonicalDirectory(c.sourceProjectionRoot); err == nil {
+					capability.ProviderStatus = "READY"
+					capability.BlockingReason = ""
+				} else {
+					capability.ProviderStatus = "RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE"
+					capability.BlockingReason = "RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE"
+				}
+			} else {
+				capability.ProviderStatus = "RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE"
+				capability.BlockingReason = "INVALID_RUNTIME_APPVAR_ROOT"
+			}
+			return capability
+		}
+		capability.ProviderKind = "documented-mount"
+		capability.ProviderVersion = c.sourceProjectionVersion
+		if capability.ProviderVersion == "" {
+			capability.ProviderVersion = "documented-mount-v1"
+		}
+		if _, err := canonicalDirectory(c.sourceProjectionRoot); err == nil && c.sourceProjectionLayout != "" {
+			capability.ProviderStatus = "READY"
+			capability.BlockingReason = ""
+		} else {
+			capability.BlockingReason = "INVALID_APPVAR_MOUNT_CONFIGURATION"
+		}
+		return capability
+	}
+	if c.fixtureCatalogConfigured() {
+		capability.ProviderKind = "fixture"
+		capability.ProviderStatus = "FIXTURE_READY"
+		capability.BlockingReason = "FIXTURE_ONLY"
+		return capability
+	}
+	if capability.CatalogReady {
+		// The platform catalog is available, but the public runtime has not
+		// projected the selected deploy's appvar into this business container.
+		// Keep this separate from an unavailable catalog so operators can ask
+		// Lazycat to repair the source projection rather than changing package
+		// paths or adding a host mount.
+		capability.ProviderKind = "platform"
+		capability.ProviderStatus = platformResolverNoProjectionStatus
+		capability.BlockingReason = platformResolverNoProjectionStatus
+		return capability
+	}
+	return capability
+}
+
+func (c pocConfig) fixtureCatalogConfigured() bool {
 	if _, ok := fallbackApplication(c); ok {
 		return true
+	}
+	if c.applicationsFile == "" {
+		return false
+	}
+	data, err := os.ReadFile(c.applicationsFile)
+	if err != nil {
+		return false
+	}
+	var catalog applicationCatalog
+	if json.Unmarshal(data, &catalog) != nil {
+		var apps []pocApplication
+		if json.Unmarshal(data, &apps) != nil {
+			return false
+		}
+		catalog.Applications = apps
+	}
+	for _, app := range catalog.Applications {
+		if app.OwnerUID == c.tenantUID && app.SourceRoot != "" {
+			return true
+		}
 	}
 	return false
 }
@@ -315,7 +467,7 @@ func validateSourceRoot(config pocConfig, app pocApplication) (string, error) {
 func (c pocConfig) validateSource() (string, error) {
 	app, ok := fallbackApplication(c)
 	if !ok {
-		return "", errors.New("platform source resolver is not configured")
+		return "", fmt.Errorf("%w: platform source mapping is unavailable", errPlatformSourceNotReady)
 	}
 	return validateSourceRoot(c, app)
 }
@@ -485,12 +637,13 @@ func reportForApplication(config pocConfig, app pocApplication) applicationRepor
 	}
 	resolved, err := resolveApplicationSource(context.Background(), config, app)
 	if err != nil {
-		report.Status = "SOURCE_NOT_READY"
+		report.Status = sourceErrorCode(err)
 		report.SourceError = err.Error()
 		return report
 	}
 	report.SourceProjection = resolved.Projection
 	report.SourceAdapter = resolved.AdapterVersion
+	report.ReadOnlyMode = resolved.ReadOnlyMode
 	report.SourceDevice = resolved.Device
 	report.SourceInode = resolved.Inode
 	report.SourceVerifiedAt = resolved.VerifiedAt.Format(time.RFC3339Nano)
@@ -569,6 +722,22 @@ func errorJSON(w http.ResponseWriter, status int, code string, err error) {
 	writeJSON(w, status, map[string]string{"code": code, "message": err.Error()})
 }
 
+func sourceErrorCode(err error) string {
+	if errors.Is(err, errRuntimeProjectionNotVisible) {
+		return "RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE"
+	}
+	if errors.Is(err, errPlatformResolverNoProjection) {
+		return platformResolverNoProjectionStatus
+	}
+	if errors.Is(err, errSourceContractUnsupported) {
+		return "SOURCE_CONTRACT_UNSUPPORTED"
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "writable") {
+		return "SOURCE_NOT_READONLY"
+	}
+	return "SOURCE_NOT_READY"
+}
+
 func methodNotAllowed(w http.ResponseWriter) { w.WriteHeader(http.StatusMethodNotAllowed) }
 
 func tenantMiddleware(config pocConfig, next http.Handler) http.Handler {
@@ -578,7 +747,7 @@ func tenantMiddleware(config pocConfig, next http.Handler) http.Handler {
 			return
 		}
 		if !config.ready() {
-			if r.URL.Path == "/api/poc/identity" || !strings.HasPrefix(r.URL.Path, "/api/") {
+			if r.URL.Path == "/api/poc/identity" || r.URL.Path == "/api/poc/source-capability" || !strings.HasPrefix(r.URL.Path, "/api/") {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -614,6 +783,14 @@ func staticHandler(root string) http.Handler {
 }
 
 func readOnlySourceForRequest(config pocConfig, r *http.Request) (pocApplication, string, error) {
+	app, resolved, err := readOnlyResolvedSourceForRequest(config, r)
+	if err != nil {
+		return pocApplication{}, "", err
+	}
+	return app, resolved.Root, nil
+}
+
+func readOnlyResolvedSourceForRequest(config pocConfig, r *http.Request) (pocApplication, resolvedSource, error) {
 	deployID := r.URL.Query().Get("deploy_id")
 	var app pocApplication
 	var err error
@@ -624,9 +801,9 @@ func readOnlySourceForRequest(config pocConfig, r *http.Request) (pocApplication
 			apps, loadErr := loadApplications(config)
 			if loadErr != nil || len(apps) == 0 {
 				if loadErr != nil {
-					return pocApplication{}, "", loadErr
+					return pocApplication{}, resolvedSource{}, loadErr
 				}
-				return pocApplication{}, "", errors.New("no tenant-owned application is configured")
+				return pocApplication{}, resolvedSource{}, errors.New("no tenant-owned application is configured")
 			}
 			for _, candidate := range apps {
 				if candidate.OwnerUID == config.tenantUID {
@@ -635,22 +812,22 @@ func readOnlySourceForRequest(config pocConfig, r *http.Request) (pocApplication
 				}
 			}
 			if app.DeployID == "" {
-				return pocApplication{}, "", errors.New("no tenant-owned application is configured")
+				return pocApplication{}, resolvedSource{}, errors.New("no tenant-owned application is configured")
 			}
 		} else if app.OwnerUID != config.tenantUID {
-			return pocApplication{}, "", errors.New("application is not owned by this tenant")
+			return pocApplication{}, resolvedSource{}, errors.New("application is not owned by this tenant")
 		}
 	} else {
 		app, err = findApplication(config, deployID)
 		if err != nil {
-			return pocApplication{}, "", err
+			return pocApplication{}, resolvedSource{}, err
 		}
 	}
-	root, err := validateSourceRoot(config, app)
+	resolved, err := resolveApplicationSource(context.Background(), config, app)
 	if err != nil {
-		return pocApplication{}, "", err
+		return pocApplication{}, resolvedSource{}, err
 	}
-	return app, root, nil
+	return app, resolved, nil
 }
 
 func snapshotID(now time.Time) string {
@@ -671,12 +848,61 @@ func hashFile(path string) (string, int64, error) {
 	return hex.EncodeToString(hash.Sum(nil)), bytesRead, nil
 }
 
+// validateDocumentRoot prevents a missing Lazycat Drive mount from silently
+// turning into a directory in the container's writable layer. The default
+// root is the public current-user Drive mount; test callers may provide an
+// explicit temporary root through BACKUP_DOCUMENT_ROOT.
+func validateDocumentRoot(root string) error {
+	clean := filepath.Clean(root)
+	info, err := os.Stat(clean)
+	if err != nil {
+		return fmt.Errorf("Lazycat Drive document mount is not available: %w", err)
+	}
+	if !info.IsDir() {
+		return errors.New("Lazycat Drive document root is not a directory")
+	}
+	if clean == defaultDocumentRoot && !mountpointVisible(clean) {
+		return errors.New("Lazycat Drive document mount is not visible")
+	}
+	return nil
+}
+
+func mountpointVisible(path string) bool {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		if decodeMountInfoPath(fields[4]) == path {
+			return true
+		}
+	}
+	return false
+}
+
+func decodeMountInfoPath(path string) string {
+	path = strings.ReplaceAll(path, `\040`, " ")
+	path = strings.ReplaceAll(path, `\011`, "\t")
+	path = strings.ReplaceAll(path, `\012`, "\n")
+	return strings.ReplaceAll(path, `\134`, `\`)
+}
+
 func writeSnapshot(config pocConfig, app pocApplication, report applicationReport) (snapshotResult, error) {
 	if report.Status != "BACKUPABLE" {
 		return snapshotResult{}, fmt.Errorf("application status %s does not allow a snapshot", report.Status)
 	}
+	if !config.ready() || app.OwnerUID == "" || app.OwnerUID != config.tenantUID {
+		return snapshotResult{}, errors.New("snapshot source violates tenant boundary")
+	}
 	if config.documentRoot == "" {
-		return snapshotResult{}, errors.New("private document root is not configured")
+		return snapshotResult{}, errors.New("Lazycat Drive document root is not configured")
+	}
+	if err := validateDocumentRoot(config.documentRoot); err != nil {
+		return snapshotResult{}, err
 	}
 	appid, err := safeSegment(app.AppID)
 	if err != nil {
@@ -692,8 +918,20 @@ func writeSnapshot(config pocConfig, app pocApplication, report applicationRepor
 	}
 	now := time.Now().UTC()
 	id := snapshotID(now)
-	relDir := filepath.Join(defaultDocFolder, "poc", now.Format("20060102T150405Z"), appid, deployID)
+	relDir := filepath.Join(defaultDocFolder, "poc", now.Format("20060102T150405.000Z"), appid, deployID)
 	destination := filepath.Join(config.documentRoot, relDir)
+	for suffix := 1; ; suffix++ {
+		_, statErr := os.Stat(destination)
+		if os.IsNotExist(statErr) {
+			break
+		}
+		if statErr == nil {
+			relDir = filepath.Join(defaultDocFolder, "poc", now.Format("20060102T150405.000Z"), fmt.Sprintf("%s-%d", appid, suffix), deployID)
+			destination = filepath.Join(config.documentRoot, relDir)
+			continue
+		}
+		return snapshotResult{}, statErr
+	}
 	partial := destination + ".partial"
 	if err := os.RemoveAll(partial); err != nil {
 		return snapshotResult{}, err
@@ -804,7 +1042,10 @@ func writeSnapshot(config pocConfig, app pocApplication, report applicationRepor
 		"snapshot": result,
 		"source": map[string]any{
 			"appid": app.AppID, "name": app.Name, "deploy_id": app.DeployID,
-			"owner_uid": app.OwnerUID, "read_only": report.ReadOnly,
+			"owner_uid": app.OwnerUID, "tenant_uid": config.tenantUID,
+			"read_only": report.ReadOnly, "read_only_mode": report.ReadOnlyMode, "projection": report.SourceProjection,
+			"adapter_version": report.SourceAdapter, "device": report.SourceDevice,
+			"inode": report.SourceInode, "verified_at": report.SourceVerifiedAt,
 		},
 		"entries":           report.Entries,
 		"database_findings": report.DatabaseFindings,
@@ -843,10 +1084,27 @@ func newHandler(config pocConfig) http.Handler {
 			methodNotAllowed(w)
 			return
 		}
+		capability := config.sourceCapability()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"tenantUID": config.tenantUID, "identityConfigured": config.ready(), "sourceConfigured": config.sourceConfigured(),
-			"catalogConfigured": config.catalogConfigured(), "requiredPermission": "appvar.other.read",
+			"tenantUID":           config.tenantUID,
+			"backupDeployID":      os.Getenv("BACKUP_APP_DEPLOY_ID"),
+			"identityConfigured":  config.ready(),
+			"sourceConfigured":    config.sourceConfigured(),
+			"catalogConfigured":   capability.CatalogReady,
+			"requiredPermission":  "appvar.other.read",
+			"requiredPermissions": []string{"appvar.other.read", "document.write"},
+			"optionalPermissions": []string{"user.notify"},
+			"sourceAdapter":       capability.ProviderKind,
+			"providerStatus":      capability.ProviderStatus,
+			"readOnlyMode":        capability.ReadOnlyMode,
 		})
+	})
+	mux.HandleFunc("/api/poc/source-capability", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		writeJSON(w, http.StatusOK, config.sourceCapability())
 	})
 	mux.HandleFunc("/api/poc/applications", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -882,20 +1140,22 @@ func newHandler(config pocConfig) http.Handler {
 			methodNotAllowed(w)
 			return
 		}
-		app, root, err := readOnlySourceForRequest(config, r)
+		app, resolved, err := readOnlyResolvedSourceForRequest(config, r)
 		if err != nil {
-			errorJSON(w, http.StatusPreconditionFailed, "SOURCE_NOT_READY", err)
+			errorJSON(w, http.StatusPreconditionFailed, sourceErrorCode(err), err)
 			return
 		}
-		scan, err := scanSource(root)
+		scan, err := scanSource(resolved.Root)
 		if err != nil {
 			errorJSON(w, http.StatusForbidden, "SOURCE_LIST_DENIED", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"sourceDeployID": app.DeployID, "appid": app.AppID, "name": app.Name,
-			"entryCount": len(scan.entries), "entries": scan.entries, "readOnly": sourceReadOnly(root),
-			"fileCount": scan.fileCount, "totalBytes": scan.totalBytes, "databaseFindings": scan.databaseFindings,
+			"sourceAdapter": resolved.AdapterVersion, "sourceProjection": resolved.Projection,
+			"entryCount": len(scan.entries), "entries": scan.entries, "readOnly": resolved.ReadOnly,
+			"readOnlyMode": resolved.ReadOnlyMode,
+			"fileCount":    scan.fileCount, "totalBytes": scan.totalBytes, "databaseFindings": scan.databaseFindings,
 		})
 	})
 	mux.HandleFunc("/api/poc/read", func(w http.ResponseWriter, r *http.Request) {
@@ -903,12 +1163,12 @@ func newHandler(config pocConfig) http.Handler {
 			methodNotAllowed(w)
 			return
 		}
-		_, root, err := readOnlySourceForRequest(config, r)
+		app, resolved, err := readOnlyResolvedSourceForRequest(config, r)
 		if err != nil {
-			errorJSON(w, http.StatusPreconditionFailed, "SOURCE_NOT_READY", err)
+			errorJSON(w, http.StatusPreconditionFailed, sourceErrorCode(err), err)
 			return
 		}
-		path, err := relativeFile(root, r.URL.Query().Get("path"))
+		path, err := relativeFile(resolved.Root, r.URL.Query().Get("path"))
 		if err != nil {
 			errorJSON(w, http.StatusBadRequest, "INVALID_SOURCE_PATH", err)
 			return
@@ -925,12 +1185,26 @@ func newHandler(config pocConfig) http.Handler {
 		}
 		defer file.Close()
 		hash := sha256.New()
+		truncated := info.Size() > maxProbeBytes
 		read, err := io.Copy(hash, io.LimitReader(file, maxProbeBytes))
 		if err != nil {
 			errorJSON(w, http.StatusInternalServerError, "SOURCE_READ_FAILED", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"bytesRead": read, "sha256": hex.EncodeToString(hash.Sum(nil)), "truncated": info.Size() > maxProbeBytes})
+		requestedPath := filepath.ToSlash(filepath.Clean(r.URL.Query().Get("path")))
+		hashScope := "complete"
+		if truncated {
+			hashScope = "prefix"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"sourceDeployID": app.DeployID,
+			"path":           requestedPath,
+			"bytesRead":      read,
+			"sha256":         hex.EncodeToString(hash.Sum(nil)),
+			"hashScope":      hashScope,
+			"complete":       !truncated,
+			"truncated":      truncated,
+		})
 	})
 	mux.HandleFunc("/api/poc/snapshots", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
