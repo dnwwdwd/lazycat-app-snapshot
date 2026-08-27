@@ -1,0 +1,30 @@
+application:
+  subdomain: mimi-app-backup-poc
+  multi_instance: true
+  background_task: true
+  routes:
+    - /=http://web.mimi-app-backup.lzcapp:8080
+
+services:
+  web:
+    image: registry.lazycat.cloud/u30387910/library/debian:cb352a5223b8abc9
+    user: "0"
+    command: sh /lzcapp/pkg/content/lzc/run.sh
+    environment:
+      - BACKUP_APP_DEPLOY_UID=${LAZYCAT_APP_DEPLOY_UID}
+      - BACKUP_WEB_ROOT=/lzcapp/pkg/content/web
+      - BACKUP_DOCUMENT_ROOT=/lzcapp/document
+      - BACKUP_POC_APPVAR_ROOT=/lzcapp/run/data/app/var
+      - BACKUP_POC_APPVAR_MODE=runtime-appvar
+      - BACKUP_POC_APPVAR_LAYOUT=appid
+      - BACKUP_POC_PROVIDER_VERSION=lzcos-runtime-appvar-v1
+    healthcheck:
+      test_url: http://127.0.0.1:8080/api/health
+      start_period: 10s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+ext_config:
+  permissions:
+    - PERM_OTHER_APP_DATA_ADMIN

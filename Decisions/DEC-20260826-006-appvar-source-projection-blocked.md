@@ -1,6 +1,6 @@
-# DEC-20260826-006 — Formal `appvar.other.read` source projection is required
+# DEC-20260826-006 — Runtime `appvar.other.read` source-projection boundary
 
-**Status:** Compatibility path implemented; A/B isolation verification pending
+**Status:** Verified by passed POC on 2026-08-27
 **Related requirement:** REQ-20260826-001
 
 ## Decision
@@ -48,9 +48,9 @@ layer. The observed compatibility mount is `rw` at the kernel level, so the
 provider reports `service-enforced`; a future kernel-read-only mount can use
 the documented provider with `ReadOnlyMode=filesystem`.
 
-## Required platform contract for future API/mount variants
+## Future API/mount variants
 
-Lazycat must provide a documented, versioned interface that accepts the
+If Lazycat later provides another source interface, it must be documented and versioned. It must accept the
 server-side `tenant_uid`, `appid`, `source_deploy_id`, `owner_uid`, and
 `multi_instance` identity established by `QueryApplication`, and returns one
 of:
@@ -71,5 +71,5 @@ reach `BACKUPABLE`, and scan/read/snapshot use the runtime provider. If the
 permission is not granted or an old instance has not been recreated, the
 service reports `RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE`; it never falls back
 to `/lzcsys/data/appvar` or a browser-supplied path. The two-user isolation
-matrix is still a release gate: until it passes, this is a device-validation
-POC rather than a final PASS.
+matrix passed. The production resolver root is an acceptable V1 foundation; it
+does not permit a fallback to `/lzcsys/data/appvar` or a browser-supplied path.

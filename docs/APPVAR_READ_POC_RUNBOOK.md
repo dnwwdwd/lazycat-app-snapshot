@@ -1,4 +1,6 @@
-# `appvar.other.read` two-user POC runbook
+# `appvar.other.read` 两用户 POC 验证记录与回归手册
+
+**状态：** 已于 2026-08-27 通过。此文档保留 POC 验证步骤；Lazycat 平台、权限声明、运行时投影或源解析器发生变化后，必须重新执行完整矩阵。
 
 ## Preconditions
 
@@ -23,9 +25,9 @@ lzc-cli app install <generated-lpk>
 7. In A's container, attempt only the platform-approved resolver route; do not browse host directories or add mounts. Verify B's appvar cannot be enumerated.
 8. Confirm B's POC cannot access A's fixture by repeating steps 3–7 with roles reversed.
 
-## Pass criteria
+## 通过条件
 
-Pass only if the PDD §8.4 and §22 rows all hold: own eligible fixture readable, other-user source unresolvable/unreadable, source read-only, no cross-user enumeration, and stable deploy-ID mapping. A failed isolation check stops the V1 backup-engine workflow.
+PDD 对应检查项须全部成立：自己的合格测试应用可读，其他用户的源不可解析或读取，源保持只读，不能枚举其他用户数据，且 `deploy_id` 映射稳定。本轮 POC 已满足这些条件。后续回归若出现隔离失败，必须暂停受影响的 V1 备份路径。
 
 If the application catalog is returned but every selected application reports
 `RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE`, verify the compatibility permission and

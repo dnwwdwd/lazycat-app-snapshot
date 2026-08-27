@@ -1,23 +1,30 @@
-# 懒猫应用备份
+# 咪咪应用备份
 
-This repository currently contains the V1 PRD/PDD, a reference UI prototype, and a gated POC for selecting an owned application, probing its `appvar`, and creating one manual read snapshot in the current user's Lazycat Drive.
+This repository currently contains the V1 PRD/PDD, the translated V1 React frontend prototype, and a gated POC for selecting an owned application, probing its `appvar`, and creating one manual read snapshot in the current user's Lazycat Drive.
 
-Read [DOCUMENT_MAP.md](DOCUMENT_MAP.md) first. The backup engine is intentionally not started until the POC package builds and passes the two-user device matrix in [docs/APPVAR_READ_POC_RUNBOOK.md](docs/APPVAR_READ_POC_RUNBOOK.md).
+Read [DOCUMENT_MAP.md](DOCUMENT_MAP.md) first. The POC package and two-user device matrix have passed; V1 implementation now proceeds on that verified data path. [docs/APPVAR_READ_POC_RUNBOOK.md](docs/APPVAR_READ_POC_RUNBOOK.md) remains the required regression check after a platform, permission, projection, or resolver change.
 
-## Build the POC
+## Build the formal V1 service
 
 ```text
 sh lzc/build-package.sh
-lzc-cli project build -o lazycat-app-backup-poc-0.1.0.lpk
+lzc-cli project build -o mimi-app-backup-0.1.0.lpk
 ```
 
-`sh lzc/build-package.sh` prepares a static Vite frontend and a Linux amd64 Go binary under `lzc-dist/`. The LPK runtime uses the validated Lazycat Debian base image and starts `/lzcapp/pkg/content/bin/backup-poc` through `lzc/run.sh`.
+`sh lzc/build-package.sh` prepares the formal static Vite frontend and Linux amd64 `backup-server` binary under `lzc-dist/`. The LPK runtime starts `/lzcapp/pkg/content/bin/backup-server` through `lzc/run.sh`. `sh lzc/build-poc-package.sh` keeps the POC binary in a separate `lzc-dist-poc/` diagnostic artifact; package it with `lzc-build.poc.yml` when the two-user POC runbook needs to run again.
 
-The configured Microserver must trust this workstation's `lzc-cli` public key before the final `.lpk` build can complete. The POC uses a server-side application catalog and source resolver contract. In a Lazycat container the catalog is queried through the official Lzc SDK with `only_owner=true`; no `other_uid` is sent. A fixture catalog can follow [`lzc/poc-applications.example.json`](lzc/poc-applications.example.json) for local tests. On LZCOS v1.6 the package also declares the compatibility `PERM_OTHER_APP_DATA_ADMIN` entry in `lzc-manifest.yml`; that entry causes the runtime to project `/lzcsys/data/appvar/` into the business container at `/lzcapp/run/data/app/var`. The service consumes that fixed in-container path and never guesses a host path.
+## Build the diagnostic POC
+
+```text
+sh lzc/build-poc-package.sh
+lzc-cli project build -c lzc-build.poc.yml -o mimi-app-backup-poc-0.1.0.lpk
+```
+
+本地 `.lpk` 构建不需要连接设备。后续安装或部署前，目标微服仍需信任此工作站的 `lzc-cli` 公钥。POC 使用服务端应用目录和源解析器契约；在懒猫容器内，目录通过官方 Lzc SDK 以 `only_owner=true` 查询，不传 `other_uid`。本地测试可以使用 [`lzc/poc-applications.example.json`](lzc/poc-applications.example.json) 作为 fixture。LZCOS v1.6 通过 `lzc-manifest.yml` 中的兼容声明 `PERM_OTHER_APP_DATA_ADMIN` 把 `/lzcsys/data/appvar/` 投影到业务容器的 `/lzcapp/run/data/app/var`。服务只读取这个容器内固定路径，不推测宿主机路径。
 
 ## POC usage
 
-The package opens the “应用与数据库全量探测” flow directly. The visible page is only this POC flow; the retained dashboard prototype is not loaded. Select an application owned by the current tenant to recursively inspect its appvar entry names, sizes, SQLite/service-database signatures, skipped special files, and read-only status. A single-instance target shows a shared-data warning and remains usable in this POC. The page never displays file bodies. “执行手动快照” creates a `tar.gz` read snapshot plus `manifest.json` under the current user's public Lazycat Drive document root and returns the archive SHA-256.
+The Vite frontend defaults to the “应用资产柜” page. The formal Go server protects business pages with OIDC, stores only server-side session metadata in the current tenant's control database, synchronizes the current-user application catalog through the verified SDK boundary, and exposes session/application APIs described in `api/openapi/openapi.yaml`. The application list, detail drawer, user menu, logout and refresh controls use these same-origin APIs. ZIP backup, plans and tasks remain unavailable in this delivery and are not simulated as successful operations. The POC diagnostics page and API remain development assets; the POC command still supports the passed read-only probe and `tar.gz` snapshot regression flow.
 
 The Go service accepts these server-side fixture variables for local tests:
 
@@ -52,10 +59,10 @@ The snapshot is intentionally a raw-read POC. It does not provide SQLite Online 
 Runtime boundaries:
 
 - `appvar.other.read` remains the user-facing data permission. `PERM_OTHER_APP_DATA_ADMIN` is an LZCOS v1.6 compatibility declaration required to create the in-container projection; `appvar.other.write` is never requested.
-- The runtime provider exposes `ReadOnlyMode=service-enforced`: this process uses `os.Open` and read-only traversal only. A/B isolation and kernel mount flags still require real-device verification.
-- The POC can enumerate only catalog entries whose `owner_uid` equals the frozen tenant. Multi-instance targets are the normal path; a single-instance target is allowed only for this POC read/snapshot check and is marked with a shared-data warning. V1 continues to reject it.
+- The runtime provider exposes `ReadOnlyMode=service-enforced`: this process uses `os.Open` and read-only traversal only. The passed A/B validation established the POC isolation boundary; future platform or resolver changes require a rerun of the device matrix.
+- The POC can enumerate only catalog entries whose `owner_uid` equals the frozen tenant. Multi-instance targets are the normal path. The formal first package also shows a current-user single-instance target with a shared-data warning; backup actions remain unavailable until the later ZIP engine stage.
 - The browser receives source names, sizes, read-only status and SHA-256 results, never file bodies.
 - Manual POC snapshots write only to `/lzcapp/document`, the current user's public Lazycat Drive document root; the source appvar is never modified.
 - The package does not implement a scheduler, restore path, or V1 database-consistent backup engine.
-- The internal service route is `web.cloud.lazycat.app.backup.lzcapp:8080`; `app-backup-poc` is the public subdomain.
-- Install, deploy and the two-user device matrix remain separate validation steps in `docs/APPVAR_READ_POC_RUNBOOK.md`.
+- The internal service route is `web.mimi-app-backup.lzcapp:8080`; the formal app uses the `mimi-app-backup` subdomain and the diagnostic POC uses `mimi-app-backup-poc`.
+- The two-user device matrix is retained in `docs/APPVAR_READ_POC_RUNBOOK.md` for regression validation.

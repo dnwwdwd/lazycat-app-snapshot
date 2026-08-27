@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
 
-exec /lzcapp/pkg/content/bin/backup-poc
+exec /lzcapp/pkg/content/bin/backup-server

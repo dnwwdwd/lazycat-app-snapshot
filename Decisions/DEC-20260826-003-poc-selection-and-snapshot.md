@@ -14,4 +14,4 @@ The previous setup screen stopped at a top-level source probe and left the user 
 
 ## Validation boundary
 
-Fixture catalog tests prove the API and archive contract locally. They do not establish that Lazycat's real `QueryApplication` result maps to the source projection or that two ordinary users cannot resolve each other's appvar. Those checks remain device gates in `docs/APPVAR_READ_POC_RUNBOOK.md`.
+Fixture catalog tests prove the API and archive contract locally. The passed two-user POC established that the real `QueryApplication` result maps to the runtime projection and that one user cannot resolve the other user's appvar. Re-run `docs/APPVAR_READ_POC_RUNBOOK.md` after a platform, permission, projection, or resolver change.

@@ -1,153 +1,123 @@
-# 懒猫应用备份技术实现文档
+# 咪咪应用备份技术实现文档 PDD
 
 > 文档版本：V1  
-> 产品名称：懒猫应用备份（Lazycat App Backup）  
+> 产品名称：咪咪应用备份（Mimi App Backup）
+> LPK 包标识：`mimi-app-backup`
+> 代码仓库：<https://github.com/dnwwdwd/lazycat-app-snapshot>
 > 后端技术栈：Go  
-> 前端技术栈：Next.js + TypeScript  
+> 前端技术栈：Vite + React + TypeScript
 > 目标平台：懒猫微服 LPK V2  
+> 登录方式：懒猫 OIDC
 > 支持语言：简体中文（zh-CN）、English（en-US）  
-> 最后更新：2026-08-26
-> 说明：本文档版本固定为 V1，后续调整只更新“最后更新”和变更记录。
+> 最后更新：2026-08-27
+> 说明：文档版本固定为 V1，后续调整只更新“最后更新”和变更记录。
 
 ## 1. 实现结论
 
-V1 采用“每个懒猫用户一个独立备份应用实例”的多实例部署模型。
+V1 在已经跑通的 POC 数据链路上继续开发，不重构已验证的数据入口、应用目录查询、文件探测和网盘写入方式。
 
-- 备份应用配置 `multi_instance: true`。
-- 每个用户打开应用后，系统为该用户启动独立的备份应用容器。
-- 每个容器只管理当前用户拥有的目标应用实例。
-- 每个容器拥有独立的 `/lzcapp/var`、控制数据库、计划、任务队列、快照索引和告警记录。
-- 每个容器只向当前用户的懒猫网盘公共文稿根目录 `/lzcapp/document` 写入备份，不允许选择管理员或其他用户的 UID。
-- 前端和后端不提供用户切换、owner 筛选、跨用户查询或管理员全局视图。
-- 目标应用必须是当前用户拥有的多实例应用，并且 `AppInfo.owner` 必须等于当前备份应用实例的 `LAZYCAT_APP_DEPLOY_UID`。
-- 单实例目标应用的 `/lzcapp/var` 可能同时包含多个用户的数据，V1 将其标记为“共享实例不支持”，不读取、不扫描、不备份。
-- 本轮 POC 为验证“选择应用 → 全量探测 → 手动快照”链路，允许单实例目标在页面显示共享数据风险后继续只读探测和一次手动快照；这不改变 V1 的支持边界。
-- 普通文件和目录使用文件级备份。
-- 标准 SQLite 使用 SQLite Online Backup API 创建一致性副本。
-- MySQL、PostgreSQL、MongoDB、Redis 以及其他已知数据库在预检阶段阻断。
-- 备份载荷直接写入当前用户自己的懒猫网盘公共文稿目录，不长期保存在备份应用容器中。
-- 一个用户命中成百上千个应用实例时，系统先快速创建持久化任务，再由有界工作池按资源预算执行。
-
-## 2. 用户隔离模型
-
-### 2.1 租户定义
-
-每个备份应用实例就是一个独立租户。租户身份从运行时环境读取：
+已经验证的链路固定为：
 
 ```text
-tenant_uid    = LAZYCAT_APP_DEPLOY_UID
-backup_app_id = LAZYCAT_APP_ID
+当前懒猫用户上下文
+→ Lzc SDK QueryApplication
+→ 当前用户可见应用目录
+→ appvar.other.read 运行时投影
+→ /lzcapp/run/data/app/var
+→ appid / deploy_id 源映射
+→ 文件与数据库探测
+→ 手动备份
+→ 当前用户懒猫网盘
 ```
 
-当前 POC 只依赖平台注入的 `LAZYCAT_APP_DEPLOY_UID`。开发盒没有稳定注入 `LAZYCAT_APP_DEPLOY_ID`，因此 POC 不把部署 ID 作为启动或健康检查条件。V1 若需要备份应用自身 deploy ID，必须先通过已验证的平台 API 获取，不能依赖未确认的 manifest 变量展开。
+V1 增加：
 
-`tenant_uid` 是该容器唯一允许服务的懒猫用户。运行期间不得通过前端参数、数据库设置或管理员身份切换租户。
-
-### 2.2 三层隔离
-
-V1 同时使用三层隔离。
-
-#### 平台容器隔离
-
-备份应用使用多实例部署。不同用户运行不同容器，容器内的 `/lzcapp/var`、`/lzcapp/cache` 和应用文稿视图彼此隔离。
-
-#### 领域数据隔离
-
-所有控制面记录保存 `tenant_uid`。任何应用实例、计划、批次、任务和快照在创建前都校验：
-
-```text
-source_instance.owner_uid == tenant_uid
-```
-
-不满足时返回 `INSTANCE_OWNER_MISMATCH`，不允许继续解析源路径。
-
-#### 请求隔离
-
-所有浏览器请求经过 Go 身份中间件。中间件读取入口注入的 `X-HC-User-ID`，并要求：
-
-```text
-X-HC-User-ID == tenant_uid
-```
-
-缺少身份头或 UID 不匹配时返回 `403`。后端不接受请求体、Query 参数或自定义 Header 中的 `uid`、`owner_uid`、`storage_uid`、`other_uid` 作为授权依据。
-
-### 2.3 管理员行为
-
-管理员访问自己的备份应用实例时，只能管理管理员本人拥有的应用实例和管理员本人的网盘目录。管理员角色不会解锁其他家庭成员的数据。
-
-V1 不实现：
-
-- 管理员全局实例目录。
-- 代表其他用户创建计划。
-- 将其他用户的快照写入管理员网盘。
-- 以 `other_uid` 查询其他用户。
-- 在同一个控制数据库中保存多个用户的数据。
-
-### 2.4 单实例目标应用
-
-懒猫单实例应用由多个用户共享一个容器，应用自行处理用户隔离。备份工具读取的是原始 appvar 文件，无法通用判断某条数据库记录或某个文件属于哪个用户。
-
-V1 对所有单实例目标应用执行以下处理：
-
-```text
-capability = SHARED_INSTANCE_UNSUPPORTED
-backup_allowed = false
-```
-
-页面说明：
-
-```text
-该应用使用共享实例，应用数据目录可能包含多个用户的数据。
-V1 无法按用户安全拆分，暂不提供备份。
-```
-
-后续只有在目标应用提供用户级导出接口，或平台提供用户级 appvar 快照接口后，才允许支持单实例应用。
-
-POC 例外：服务端仍校验 `owner_uid == tenant_uid`、源路径边界和源目录可读性；单实例扫描成功后返回 `BACKUPABLE` 并附带 `sourceWarning`，手动快照按钮可以执行。该结果只能证明平台源投影可读，不能证明共享 appvar 已完成用户级拆分。
-
-## 3. V1 能力边界
-
-### 3.1 正式支持
-
-- 当前用户拥有的多实例应用。
-- 普通文件和目录。
-- JSON、JSONL、YAML、TOML、CSV、Markdown、文本文件。
-- 图片、附件、模型文件、配置文件和应用运行资源。
-- 向量索引、全文索引和自定义二进制目录，按文件级方式备份。
-- 标准 SQLite 3，通过 Online Backup API 生成一致性副本。
-- 单实例计划、应用全部实例计划、批量计划和 Cron 定时计划。
-- 将结果写入当前用户自己的懒猫网盘公共文稿目录。
+- 懒猫 OIDC 登录和服务端会话。
+- 正式 Vite/React 管理端，由 Go 同源托管构建产物。
+- SQLite Online Backup。
+- ZIP 归档。
+- 计划、批次、任务队列和补跑。
+- 备份库、校验、存储维护和告警。
 - 中英文国际化。
 
-### 3.2 明确不支持
+备份应用自身保持 `multi_instance: true`。每个懒猫用户运行独立实例，并拥有独立控制库、计划、队列、快照索引和设置。
 
-- 其他用户拥有的应用实例。
-- 单实例共享应用的 appvar。
-- MySQL、MariaDB、PostgreSQL、MongoDB、Redis。
-- Elasticsearch、ClickHouse、OpenSearch 等服务型数据库。
-- DuckDB、LMDB、RocksDB、LevelDB、Pebble、bbolt、BadgerDB、H2、HSQLDB、Derby 等其他文件或目录数据库。
-- SQLCipher 或无法确认格式的加密 SQLite。
-- 懒猫网盘、懒猫相册、LightOS 和其他系统级特殊数据。
-- 其他应用的应用文稿、媒体目录、RemoteFS、NAS 和宿主机任意目录。
-- 直接写回目标应用 appvar。
-- 自动停止、启动或重启目标应用。
-- 跨用户集中备份、集中查看和统一恢复。
+管理员跨用户备份不进入 V1。管理员与普通用户都只处理当前 OIDC 用户在平台上下文中可访问的数据。
 
-### 3.3 安全不变量
+## 2. POC 已验证基线
 
-1. 当前备份实例只处理 `owner_uid == tenant_uid` 的目标实例。
-2. 目标实例必须为多实例应用。
-3. 源 appvar 始终只读。
-4. 不申请 `appvar.other.write`。
-5. 不使用 `QueryApplication.other_uid`。
-6. 不允许前端提交源绝对路径。
-7. 不硬编码宿主机 `/data/appvar/<deploy_id>`。
-8. 不允许选择其他用户的网盘 UID。
-9. 目标根目录固定为平台提供的当前用户网盘路径 `/lzcapp/document`。
-10. 未写入 `COMPLETED` 的目录不算成功快照。
-11. 检测到不支持数据库时不降级为普通文件备份。
-12. SQLite 在线备份失败时不直接复制活动数据库文件。
-13. 任何列表、SSE、日志、导出和告警都不得返回其他用户的数据。
+当前仓库 POC 已经完成：
+
+1. 读取当前用户身份。
+2. 通过 Go Lzc SDK 调用 `QueryApplication`。
+3. 请求不传 `other_uid`，启用 `only_owner`。
+4. 再次校验应用 `owner` 与当前 `tenant_uid`。
+5. 使用 `appvar.other.read` 和 LZCOS 兼容权限获得应用数据投影。
+6. 从 `/lzcapp/run/data/app/var` 读取当前用户可见的应用数据。
+7. 按应用标识解析源目录。
+8. 全量遍历目录。
+9. 统计文件数、目录数和容量。
+10. 识别 SQLite、MySQL、PostgreSQL、MongoDB 和 Redis 特征。
+11. 对指定普通文件计算 SHA-256。
+12. 创建一次手动 `tar.gz` 快照。
+13. 写入当前用户的懒猫网盘。
+
+本次改造只把 `tar.gz` 替换为 ZIP。以下行为保持不变：
+
+- 应用目录查询。
+- 当前用户过滤。
+- appvar 投影根目录。
+- appvar 源映射。
+- 文件扫描。
+- 数据库识别。
+- SHA-256 探针。
+- 当前用户网盘写入。
+- 后端拒绝浏览器传入源绝对路径。
+
+POC 的全量探测页面保留在仓库中，供开发验证和故障排查使用。生产构建不注册该页面，不纳入 PRD 菜单和功能。
+
+## 3. V1 支持边界
+
+### 3.1 支持
+
+- 当前用户可见的单实例应用。
+- 当前用户拥有的多实例应用实例。
+- 普通文件和目录。
+- 配置、附件、图片、模型、向量索引和全文索引。
+- 标准 SQLite 3。
+- 手动和定时备份。
+- 批量目标。
+- ZIP 归档。
+- 当前用户网盘存储。
+- 校验、保留和导出。
+- 中文和英文。
+
+### 3.2 阻断
+
+以下数据库被检测后阻止整个实例任务：
+
+- MySQL、MariaDB。
+- PostgreSQL。
+- MongoDB。
+- Redis。
+- Elasticsearch、OpenSearch、ClickHouse。
+- DuckDB、LMDB、RocksDB、LevelDB、Pebble、bbolt、BadgerDB。
+- H2、HSQLDB、Derby。
+- SQLCipher。
+- 无法确认类型的数据库文件或目录。
+
+### 3.3 不实现
+
+- 管理员跨用户查询和备份。
+- `QueryApplication.other_uid`。
+- 目标应用写回。
+- 自动停启目标应用。
+- 直接恢复。
+- 系统级应用数据备份。
+- LightOS 系统盘。
+- 其他应用文稿、媒体、RemoteFS 和 NAS。
+- 宿主机路径挂载。
+- 本地账号和密码登录。
 
 ## 4. 技术栈
 
@@ -155,83 +125,60 @@ POC 例外：服务端仍校验 `owner_uid == tenant_uid`、源路径边界和�
 
 | 类别 | 技术 | 用途 |
 | --- | --- | --- |
-| 语言 | Go | API、调度、队列、扫描、归档和后台任务 |
-| HTTP | `net/http` + `chi` | REST API、静态资源、健康检查和 SSE |
-| 控制数据库 | SQLite WAL | 当前用户的目录、计划、批次、任务、快照和设置 |
-| SQLite 驱动 | `modernc.org/sqlite` | 多架构构建和 SQLite Online Backup API |
-| 调度 | `robfig/cron/v3` + 持久化调度层 | Cron、补跑、批次展开和备份窗口 |
-| 并发 | Go context、channel、`x/sync` | 有界工作池、取消、限流和资源预算 |
-| 文件系统 | Go 标准库 + `golang.org/x/sys/unix` | 安全遍历、文件类型、Statfs、fsync 和路径校验 |
-| 归档 | `archive/tar` | 流式归档和分片 |
-| 压缩 | `klauspost/compress/zstd` | 低内存流式压缩 |
-| 校验 | SHA-256 | 归档分片、SQLite、索引和清单校验 |
-| 日志 | `log/slog` | 结构化日志、tenant 字段和脱敏 |
-| 接口契约 | OpenAPI | 前后端 DTO、错误码、分页和事件模型 |
-| 懒猫平台 | Go Lzc SDK | 当前用户应用实例查询、实例变化和通知 |
+| 语言 | Go | API、OIDC、调度、扫描、ZIP、校验和任务 |
+| HTTP | `net/http` + `chi` | REST、OIDC 回调、SSE、静态资源和健康检查 |
+| OIDC | `coreos/go-oidc/v3` + `golang.org/x/oauth2` | Discovery、Authorization Code、PKCE、ID Token 和 UserInfo |
+| 控制数据库 | SQLite WAL | 会话、应用目录、计划、批次、任务、快照、告警和设置 |
+| SQLite 驱动 | `modernc.org/sqlite` | 控制库和目标 SQLite Online Backup |
+| 调度 | `robfig/cron/v3` + 持久化调度层 | Cron、补跑、批次展开和窗口 |
+| 并发 | context、channel、`x/sync` | 工作池、取消、信号量和背压 |
+| 归档 | Go 标准库 `archive/zip` | ZIP 和 ZIP64 |
+| 校验 | SHA-256 | ZIP、SQLite 和可选单文件校验 |
+| 文件系统 | Go 标准库 + `x/sys/unix` | 安全遍历、Statfs、fsync 和路径约束 |
+| 日志 | `log/slog` | 结构化日志和脱敏 |
+| 接口契约 | OpenAPI | 前后端 DTO、分页和错误码 |
+| 懒猫平台 | Go Lzc SDK | 应用实例目录、运行时信息和通知 |
 
 ### 4.2 前端
 
-当前 POC 使用 `apps/web` 中的 Vite + React 静态构建；V1 规划中的 Next.js 依赖和大规模数据组件尚未进入此 POC。
-
 | 类别 | 技术 | 用途 |
 | --- | --- | --- |
-| 框架 | Next.js App Router（V1 规划） | 路由、布局和静态导出 |
-| 语言 | TypeScript 严格模式 | 类型安全 |
-| 部署 | Static Export | 由 Go 同源托管，生产环境不运行 Node.js |
-| UI | React + shadcn/ui + Radix UI | 页面组件、弹窗、菜单和无障碍交互 |
-| 样式 | Tailwind CSS | 设计令牌和响应式布局 |
+| 框架 | Vite + React | 页面、组件和静态构建 |
+| 语言 | TypeScript | API 客户端和组件类型安全 |
+| UI | 现有原型组件 | 管理后台组件和无障碍交互 |
+| 样式 | 原型 CSS | 设计令牌和响应式布局 |
 | 图标 | Lucide | 菜单、状态和操作图标 |
-| 服务端状态 | TanStack Query | 缓存、分页、失效和重试 |
-| 表格 | TanStack Table + 虚拟滚动 | 大规模应用、任务和快照列表 |
-| 表单 | React Hook Form + Zod | 计划和设置表单 |
-| 国际化 | next-intl | `zh-CN` 与 `en-US` |
-| 实时状态 | EventSource/SSE | 当前用户的任务、批次和告警 |
+| 查询 | 同源 Fetch API 客户端 | 会话、分页、同步状态和错误码 |
+| 接口契约 | OpenAPI 3.1 + `openapi-typescript` | DTO 与生成类型漂移检查 |
+| 国际化 | 前端 locale 模块 | `zh-CN` 和 `en-US` |
+| 实时状态 | EventSource / SSE | 任务、批次、告警和系统状态 |
+| 图表 | 轻量图表库 | 容量、成功率和吞吐趋势 |
 
-### 4.3 运行形态
+### 4.3 生产运行形态
 
-V1 使用一个多实例 LPK。每个用户实例运行一个 Go 进程，Go 进程内部包含：
+一个 LPK 使用一个业务服务容器。该容器运行 Go 进程，负责：
 
-- HTTP API。
-- Next.js 静态资源托管。
-- 当前用户身份校验。
+- OIDC Client。
+- API。
+- Vite 静态资源。
 - 应用目录同步。
 - 调度器。
 - 持久化任务队列。
-- 有界备份工作池。
+- ZIP 工作池。
 - SQLite 快照工作池。
-- 网盘写入和校验。
-- SSE 聚合。
+- 网盘写入。
+- SSE。
+- 站内告警、审计和当前用户设置。
 
-不为每个用户额外启动常驻 Node.js 服务，也不在 V1 中拆分多个 Worker 容器。多实例部署已经会按用户复制容器，单进程结构可以降低每个用户实例的内存占用和挂载复杂度。
+生产环境不常驻 Node.js。Vite 在构建阶段生成静态资源，由 Go 同源托管。正式构建脚本先构建 Vite，再编译 `cmd/server` 为 Linux 二进制并一同放入 LPK 内容目录。现有 Vite/React 原型是正式前端入口；POC 诊断页与 API 仍只作为开发资产保留。阶段 0–5 完成本地实现后，`mimi-app-backup-0.1.0.lpk` 已完成本地打包和 lint。
 
 ## 5. LPK 配置
 
 ### 5.1 `package.yml`
 
+V1 权限：
+
 ```yaml
-package: cloud.lazycat.app.backup
-version: 0.1.0
-name: 懒猫应用备份 POC
-description: 验证当前用户可安全读取自己拥有的应用 appvar
-author: dnwwdwd
-homepage: https://github.com/dnwwdwd/lazycat-app-snapshot
-license: MIT
-min_os_version: "1.5.0"
-
-locales:
-  zh:
-    name: 懒猫应用备份 POC
-    description: 验证当前用户可安全读取自己拥有的应用 appvar
-  zh_CN:
-    name: 懒猫应用备份 POC
-    description: 验证当前用户可安全读取自己拥有的应用 appvar
-  en:
-    name: Lazycat App Backup POC
-    description: Verify safe, tenant-isolated read access to the current user's appvar
-  ja:
-    name: Lazycat App Backup POC
-    description: 現在のユーザーが所有するアプリの appvar を安全に読み取れることを検証します
-
 permissions:
   required:
     - appvar.other.read
@@ -240,117 +187,180 @@ permissions:
     - user.notify
 ```
 
-不设置 `admin_only: true`。普通用户和管理员都只能使用自己的多实例容器。
+用途：
+
+- `appvar.other.read`：读取当前用户上下文可见的其他应用 appvar。
+- `document.write`：向当前用户懒猫网盘写入备份。
+- `user.notify`：预留给后续外部通知；阶段 5 只保存站内提醒偏好和站内告警，未把它作为已验证能力。
+
+V1 不申请：
+
+```text
+appvar.other.write
+compose.override
+device.block
+lightos.manage
+document.read
+media.read
+```
+
+应用不设置 `admin_only: true`。普通用户和管理员都可以使用自己的多实例应用实例。
 
 ### 5.2 `lzc-manifest.yml`
 
+保留当前已验证的运行结构，并增加 OIDC：
+
 ```yaml
 application:
-  subdomain: app-backup-poc
+  subdomain: mimi-app-backup
   multi_instance: true
   background_task: true
+  oidc_redirect_path: /auth/oidc/callback
   routes:
-    - /=http://web.cloud.lazycat.app.backup.lzcapp:8080
+    - /=http://web.mimi-app-backup.lzcapp:8080
 
 services:
   web:
-    image: registry.lazycat.cloud/u30387910/library/debian:cb352a5223b8abc9
-    command: sh /lzcapp/pkg/content/lzc/run.sh
+    image: <正式镜像或 embed image>
+    user: "0"
+    command: <Go 启动命令>
     environment:
       - BACKUP_APP_DEPLOY_UID=${LAZYCAT_APP_DEPLOY_UID}
-      - BACKUP_WEB_ROOT=/lzcapp/pkg/content/web
       - BACKUP_DOCUMENT_ROOT=/lzcapp/document
+      - BACKUP_APPVAR_ROOT=/lzcapp/run/data/app/var
+      - BACKUP_APPVAR_MODE=runtime-appvar
+      - BACKUP_APPVAR_LAYOUT=appid
+      - BACKUP_PROVIDER_VERSION=lzcos-runtime-appvar-v1
+
+      - OIDC_CLIENT_ID=${LAZYCAT_AUTH_OIDC_CLIENT_ID}
+      - OIDC_CLIENT_SECRET=${LAZYCAT_AUTH_OIDC_CLIENT_SECRET}
+      - OIDC_ISSUER_URI=${LAZYCAT_AUTH_OIDC_ISSUER_URI}
+      - OIDC_AUTH_URI=${LAZYCAT_AUTH_OIDC_AUTH_URI}
+      - OIDC_TOKEN_URI=${LAZYCAT_AUTH_OIDC_TOKEN_URI}
+      - OIDC_USERINFO_URI=${LAZYCAT_AUTH_OIDC_USERINFO_URI}
+
     healthcheck:
       test_url: http://127.0.0.1:8080/api/health
+      start_period: 10s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+ext_config:
+  permissions:
+    - PERM_OTHER_APP_DATA_ADMIN
 ```
 
-POC 构建脚本将前端产物和静态 Linux amd64 Go 二进制放入 LPK 内容目录。运行脚本只启动二进制，不在容器启动时安装依赖或执行前端构建。服务不向 `/lzcapp/pkg/content` 写入数据，也不使用宿主机挂载。
+约束：
 
-当前 POC 已实现“选择应用 → 递归探测 appvar → 手动读取快照”的服务端闭环。应用目录在 Lazycat 运行时通过官方 Lzc SDK 的 `QueryApplication` 获取，请求固定为空 `deploy_ids`、`only_owner=true`、`ignore_pending_pkg=true`，不传 `other_uid`；服务端还会再次过滤 `AppInfo.owner == tenant_uid`。本地 fixture 仍用于离线测试。浏览器只能提交已展示的 `deploy_id` 和相对文件路径；后端会再次校验 `owner_uid == tenant_uid`、路径未越界和数据库类型。多实例是 V1 的正式入口，单实例在 POC 中只增加共享数据警告。手动快照只写当前用户 `/lzcapp/document` 下的 POC 目录，响应只返回归档元数据和 SHA-256，不返回文件正文。
+- `/lzcapp/run/data/app/var` 是当前 POC 已验证的容器内运行时投影。
+- `PERM_OTHER_APP_DATA_ADMIN` 是当前 LZCOS 兼容声明，继续保留。
+- 不将该路径改为宿主机路径。
+- `OIDC_CLIENT_SECRET` 每次容器重启可能变化，不写入数据库或日志。
+- `BACKUP_DOCUMENT_ROOT=/lzcapp/document` 保持当前 POC 已验证的网盘路径。
+- 后续迁移稳定文稿路径时通过存储适配层处理，不在本次改造中改变链路。
 
-真实平台的 `QueryApplication` 目录适配已接入。LZCOS v1.6 通过
-`PERM_OTHER_APP_DATA_ADMIN` 将 appvar 投影到业务容器固定路径
-`/lzcapp/run/data/app/var`，当前 POC 按 `appid` 映射并以应用层只读方式扫描；不会
-猜测宿主路径或伪造数据。若权限未生效或旧实例未重建，页面显示
-`RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE`。POC 快照对 SQLite 采用原始读取，V1 的
-SQLite Online Backup、调度和恢复能力仍未实现。
+## 6. OIDC 登录
 
-设备验证中已观察到两类状态：应用目录查询可以返回当前用户的应用；声明兼容权限的
-高权限应用可以看到 `/lzcapp/run/data/app/var` 全局投影。当前包已接入该运行时
-provider；仍需在两用户矩阵中确认 owner 过滤不会暴露其他用户 appvar。宿主侧
-`/lzcsys/data/appvar/...` 路径不属于业务容器可用接口，不能作为实现替代。
+### 6.1 登录要求
 
-### 5.3 后台运行限制
+所有业务页面和 API 必须拥有有效 OIDC 会话。健康检查、OIDC 登录入口和回调是唯一例外。
 
-`background_task: true` 用于避免实例在执行长任务时因不活跃被停止。官方现有说明中，由该字段带来的自动启动行为只覆盖单实例应用，因此多实例定时任务必须完成下面的真机验证：
+入口鉴权 Header 继续保留，OIDC 用于建立应用自身会话和用户信息。
 
-1. 当前用户能否为自己的备份应用 `deploy_id` 开启自启动。
-2. `PackageManager.ChangeDeployCfg` 的 `autostart` 是否允许实例 owner 调用。
-3. 微服重启后，该用户的备份应用实例是否能自动恢复。
-4. 无法自动恢复时，应用启动后能否按补跑窗口执行漏跑计划。
+### 6.2 Authorization Code Flow
 
-V1 必须始终实现补跑机制。自启动 POC 未通过时，页面显示：
+流程：
+
+1. 用户访问业务页面。
+2. Go 检查服务端会话。
+3. 无会话时返回同源登录页，不生成 OIDC 登录事务。
+4. 用户点击登录页中的按钮，浏览器 `POST /auth/login`。
+5. Go 生成 `state`、`nonce` 和 PKCE verifier，并将短生命周期登录事务保存到控制库。
+6. 跳转 OIDC authorization endpoint。
+7. OIDC 回调返回授权码。
+8. Go 校验 `state`。
+9. 使用 code + verifier 换取 Token。
+10. 校验 ID Token 签名、issuer、audience、nonce 和过期时间。
+11. 调用 UserInfo。
+12. 获取 UID、显示名称、邮箱和 groups。
+13. 创建服务端会话并跳转 `/` 首页。
+
+### 6.3 OIDC profile UID 与懒猫网关 UID
+
+OIDC profile UID 从 UserInfo 的 `preferred_username` claim 读取，保存为 `session.uid`，用于用户显示和审计。
+
+懒猫网关 UID 从 OIDC 回调请求的 `X-HC-User-ID` 读取，保存为 `session.gateway_uid`，并作为该会话的 `tenant_uid`。后端不接受前端提交任一种 UID。
+
+### 6.4 角色
+
+OIDC groups 用于确认角色：
 
 ```text
-当前系统无法保证多实例应用在重启后自动运行。
-定时计划会在你下次打开应用时按补跑规则执行。
+NORMAL
+ADMIN
 ```
 
-不得在未验证的情况下承诺完全无人值守的重启后定时备份。
+角色只进入：
 
-## 6. 当前用户身份
+- 用户菜单。
+- 审计记录。
+- 告警上下文。
+- 后续功能预留。
 
-### 6.1 容器身份
+`ADMIN` 不扩大数据范围。后端仍不调用 `other_uid`。
 
-Go 进程启动时读取并冻结：
+### 6.5 身份绑定
+
+每个请求执行：
 
 ```text
-LAZYCAT_APP_DEPLOY_UID
-BACKUP_APP_DEPLOY_UID
-LAZYCAT_APP_ID
-LAZYCAT_BOX_DOMAIN
+session.gateway_uid == X-HC-User-ID
 ```
 
-启动条件：
+此判断沿用 `agent-desk` 的同命名空间绑定方式。OIDC profile UID 不参与比较；`LAZYCAT_APP_DEPLOY_UID` 是应用部署标识，只作为 OIDC 登录事务内部作用域，不作为用户 UID。回调校验 `state`、`nonce`、授权码、ID Token、UserInfo 和网关 UID 是否存在，然后创建带 `gateway_uid` 的会话；创建会话后的业务请求才校验 `session.gateway_uid == X-HC-User-ID`。
 
-- `LAZYCAT_APP_DEPLOY_UID` 必须非空。
-- `BACKUP_APP_DEPLOY_UID` 必须等于 `LAZYCAT_APP_DEPLOY_UID`。
-- 当前备份应用必须以多实例运行；目标应用是否多实例由报告展示，POC 允许单实例进入只读验证并显示警告。
-- POC 不要求 `LAZYCAT_APP_DEPLOY_ID` 或 `BACKUP_APP_DEPLOY_ID`。
+失败处理：
 
-不满足时进入只读诊断页面，不启动调度器和 Worker。
+- 删除会话。
+- API 返回 403；浏览器访问清除 Cookie 后进入登录页，要求用户再次主动授权。
+- 不返回任何业务数据。
+- 记录脱敏安全日志。
 
-### 6.2 HTTP 身份
+### 6.6 会话
 
-懒猫入口鉴权成功后会向应用注入 `X-HC-User-ID`。Go 中间件按以下顺序处理：
+Cookie：
 
-1. 验证请求来自受信任 ingress 转发链。
-2. 读取 `X-HC-User-ID`。
-3. 要求其等于 `tenant_uid`。
-4. 读取 `X-HC-User-Role` 仅用于页面展示。
-5. 将 `tenant_uid` 写入请求上下文。
-6. 所有业务服务只从请求上下文获取租户，不读取前端 UID 参数。
+- HttpOnly。
+- Secure。
+- SameSite=Lax。
+- Path=/。
+- 使用随机 session ID。
+- 不在 Cookie 内保存用户信息和 Token。
 
-### 6.3 后台任务身份
+会话记录：
 
-调度任务没有浏览器请求上下文，后台进程使用容器启动时冻结的 `tenant_uid`。调用 Lzc SDK 查询应用时：
+- session ID hash。
+- OIDC subject。
+- OIDC profile UID。
+- 懒猫网关 UID。
+- 名称。
+- 邮箱。
+- groups。
+- 创建时间。
+- 到期时间。
+- 最近访问时间。
 
-- `other_uid` 始终为空。
-- `only_owner` 设置为 `true`。
-- 返回结果必须再次检查 `AppInfo.owner == tenant_uid`。
-- V1 返回的单实例应用只用于展示“不支持”状态，不进入 SourceResolver；本轮 POC 可将单实例交给只读源探测器，并在报告中附带共享数据警告。
+OIDC Client Secret、access token 和 refresh token不写入普通日志。V1 完成 UserInfo 后可以丢弃 access token；会话过期后重新登录。
 
-真机 POC 必须确认 Go 后台通过运行时 SDK 凭据调用 `QueryApplication` 时，系统识别的当前用户就是 `LAZYCAT_APP_DEPLOY_UID`。如果无法建立该用户上下文，V1 不得改用管理员 `other_uid` 兜底。
+### 6.7 后台任务
 
-当前 SDK 版本不会仅凭应用 deploy UID 推导 API 用户上下文。POC 调用 SDK 的 `WithRealUID(tenant_uid)`，将启动时冻结的租户 UID 放入 `X-Hc-User-Id` 元数据；该值不来自浏览器，也不通过 `QueryApplication.other_uid` 传递。
+调度器和 Worker 不依赖浏览器会话。后台身份固定为容器启动时读取的 `tenant_uid`。
 
-## 7. 应用实例发现
-
-### 7.1 查询规则
-
-每个用户实例只执行当前用户查询：
+后台应用目录查询继续使用：
 
 ```text
+WithRealUID(tenant_uid)
 QueryApplication(
   deploy_ids = [],
   other_uid = unset,
@@ -359,849 +369,1094 @@ QueryApplication(
 )
 ```
 
-严禁：
-
-- 列出盒子全部用户。
-- 遍历 UID 并逐个查询。
-- 由管理员传入 `other_uid`。
-- 在控制库中创建其他用户的 owner 记录。
-
-### 7.2 目标实例唯一键
-
-当前用户的多实例目标使用：
+每条结果再次校验：
 
 ```text
-tenant_uid + appid + source_deploy_id
+AppInfo.owner == tenant_uid
 ```
 
-`source_deploy_id` 是平台返回的目标应用实例 ID。每次同步时保存：
+## 7. 用户和租户模型
 
-- `tenant_uid`。
-- `appid`。
-- 应用名称和版本快照。
-- `source_deploy_id`。
-- `owner_uid`。
-- `multi_instance`。
-- 运行状态。
-- 是否内置。
-- 最近同步时间。
+### 7.1 备份应用多实例
 
-数据库约束要求 `owner_uid == tenant_uid`。
+`multi_instance: true` 保持不变。每个用户实例拥有独立：
 
-### 7.3 分类
+- `/lzcapp/var`。
+- 控制库。
+- 会话。
+- 计划。
+- 任务。
+- 快照索引。
+- 告警。
+- 设置。
 
-同步结果分为：
+### 7.2 管理员
 
-- `OWNED_MULTI_INSTANCE`：当前用户拥有的多实例，可以进入能力检测。
-- `SHARED_INSTANCE_UNSUPPORTED`：单实例，共享 appvar，不允许备份。
-- `OWNER_MISMATCH`：owner 与当前租户不一致，拒绝保存并产生安全告警。
-- `SYSTEM_UNSUPPORTED`：系统应用或特殊对象。
-- `SELF_EXCLUDED`：备份应用自身，防止递归备份。
+管理员也进入自己的多实例容器。V1 不实现：
 
-### 7.4 增量同步
+- 全局用户目录。
+- 租户切换。
+- `other_uid`。
+- 其他用户网盘写入。
+- 跨用户快照索引。
 
-- 监听应用安装、卸载和实例变化事件。
-- 事件只触发重新查询，不直接作为最终事实。
-- 定期执行当前用户全量对账。
-- 每次计划触发前重新查询当前用户实例。
-- 目标实例消失时停止新任务，历史快照保留在当前用户网盘。
+### 7.3 目标单实例应用
 
-## 8. appvar 访问与租户边界
+单实例目标应用允许进入探测和备份。
 
-### 8.1 `appvar.other.read`
+规则：
 
-该权限只赋予读取能力。LZCOS v1.6 还需要在 `lzc-manifest.yml` 的
-`ext_config.permissions` 声明 `PERM_OTHER_APP_DATA_ADMIN` 才会向业务容器注入
-`/lzcapp/run/data/app/var` 兼容投影；该声明不是写权限。正式代码必须通过平台
-适配器解析源目录，不接受前端绝对路径，也不拼接宿主机路径。
+- 应用必须由当前用户目录查询返回。
+- `owner` 校验必须通过。
+- 运行时投影必须能解析源目录。
+- 页面和计划创建流程显示共享实例风险提示。
+- 风险提示不作为创建计划或手动备份的服务端前置条件。
+- 快照 manifest 保存 `multi_instance=false` 和风险标记。
 
-### 8.2 SourceResolver 输入
+### 7.4 目标多实例应用
 
-SourceResolver 只接收后端目录中已经验证的对象：
+多实例目标以当前用户的 `deploy_id` 为实例身份。运行时投影只能解析当前用户实例。
+
+唯一键：
 
 ```text
-tenant_uid
-appid
-source_deploy_id
-owner_uid
-multi_instance
+tenant_uid + appid + deploy_id
 ```
 
-解析前必须满足：
+## 8. 应用目录同步
+
+### 8.1 全量同步
+
+1. 使用当前 `tenant_uid` 建立 SDK 请求上下文。
+2. 调用 `QueryApplication`。
+3. 不传 `other_uid`。
+4. 启用 `only_owner=true`。
+5. 过滤空 `deploy_id`。
+6. 过滤 owner 不匹配。
+7. 排除备份应用自身。
+8. 保存应用、实例模式、版本和状态。
+9. 对新增或变化项创建轻量探测任务。
+
+### 8.2 增量同步
+
+- 订阅安装和卸载事件。
+- 事件触发重新查询。
+- 定期全量对账。
+- 计划执行前重新查询。
+- 消失实例停止新任务，历史快照保留。
+- 当前首个实现包使用单个可合并的同步协调器和最多 8 个探测 worker。`POST /api/applications/sync` 返回 202；列表接口返回最近持久化结果与同步状态。
+
+### 8.3 分页
+
+应用 API 使用游标分页：
+
+- 默认 50。
+- 最大 200。
+- 名称、appid 和 deploy_id 建立规范化索引。
+- 大小和文件数异步刷新。
+
+## 9. appvar 数据入口
+
+### 9.1 已验证投影
+
+V1 使用当前 POC 已跑通的投影：
 
 ```text
-owner_uid == tenant_uid
-multi_instance == true
-source_deploy_id 在当前用户最新 QueryApplication 结果中存在
+/lzcapp/run/data/app/var
 ```
 
-上面是 V1 SourceResolver 的正式约束。POC 在 `multi_instance == false` 时保留租户、路径和只读校验，返回共享数据告警并允许一次只读快照；该例外不进入 V1 能力声明。
+源选择器不等待新的 SDK 文件 API，也不修改已验证链路。
 
-### 8.3 SourceResolver 输出
+### 9.2 映射
 
-- 只读源根目录或平台文件句柄。
-- 对应 `source_deploy_id`。
-- 投影方式和适配器版本。
-- 是否只读。
-- 只读保障模式（例如 `filesystem` 或 `service-enforced`）。
-- 根目录设备和 inode 标识。
-- 最近验证时间。
+当前运行时布局按 `appid` 解析：
 
-### 8.4 发布门槛
+```text
+/lzcapp/run/data/app/var/<appid>
+```
 
-必须使用两个普通用户 A、B 验证跨用户边界：
+`deploy_id` 作为任务、锁、快照和目录身份保存。
 
-1. 用户 A 的备份容器只能解析用户 A 拥有的目标 `deploy_id`。
-2. 用户 B 的目标 `deploy_id` 传给用户 A 的 SourceResolver 时必须失败。
-3. 用户 A 无法通过目录遍历列出用户 B 的 appvar 根。
-4. 用户 A 无法 `stat`、打开或读取用户 B 的源文件。
-5. 用户 A 的源目录只读，无法创建、修改和删除。若使用 LZCOS v1.6 兼容投影
-   （内核 mount 可能是 `rw`），POC 至少必须证明服务代码只走读取系统调用；V1
-   仍要求平台提供内核级只读或等价强制能力。
+解析步骤：
 
-如果 `appvar.other.read` 在多实例容器中暴露全局可枚举 appvar，且平台没有提供用户级强制过滤或实例句柄，V1 不发布用户版。仅靠前端隐藏或 Go 业务过滤不足以宣称系统级用户隔离。
+1. 从后端应用目录获取已验证对象。
+2. 校验 appid 和 deploy_id 字符。
+3. 在固定投影根下拼接 appid。
+4. 拒绝符号链接目标。
+5. `EvalSymlinks`。
+6. 校验解析结果仍位于固定投影根内。
+7. 获取设备、inode 和验证时间。
+8. 返回后端私有源根。
 
-### 8.5 路径安全
+同一租户若出现多个不同 `deploy_id` 指向同一个 `appid`，且运行时投影仍只有一个 appid 目录，状态设为 `SOURCE_MAPPING_AMBIGUOUS`，停止备份，等待平台提供更细粒度映射。
 
-- 使用相对路径遍历。
-- 不跟随越过源根的符号链接。
+不接受浏览器源路径。
+
+### 9.3 只读策略
+
+当前兼容投影可能在文件系统层表现为可写。服务必须执行应用层只读：
+
+- 所有源文件只使用只读打开方式。
+- 不调用创建、截断、重命名、删除、chmod、chown 和写入。
+- 源路径和目标网盘路径使用独立类型。
+- 写入接口只接受 StorageProvider 返回的目标。
+- 备份前后对抽样文件执行大小、mtime 和 SHA-256 对比。
+- 源目录只读约束由服务端路径解析、打开方式和权限边界共同保证；真实平台验收确认目标应用数据未被写入。
+
+页面显示：
+
+```text
+应用层只读（兼容投影）
+```
+
+### 9.4 路径安全
+
+- 跳过越界符号链接。
 - 跳过 Socket、命名管道、块设备和字符设备。
-- 不读取 `/proc`、`/sys`、`/dev` 或宿主机目录。
-- 不把 `/data/appvar` 当作公开 API。
-- 执行前重新解析源根并比对 deploy ID。
+- 拒绝 `..`。
+- 拒绝绝对相对条目。
+- 限制目录深度、路径长度和文件数量。
+- ZIP entry 始终使用 `/` 分隔的安全相对路径。
 
-## 9. 当前用户网盘存储
+## 10. 能力探测
 
-### 9.1 当前用户绑定
+### 10.1 轻量探测
 
-备份实例的租户身份仍固定为：
+用于应用列表：
+
+- 源可用性。
+- 文件和目录数量估算。
+- 数据大小估算。
+- SQLite 数量。
+- 数据库特征。
+- 无数据判断。
+- 实例模式。
+
+### 10.2 完整预检
+
+用于任务执行：
+
+- 完整目录遍历。
+- 文件计划。
+- SQLite 主文件与辅助文件关系。
+- 不支持数据库。
+- 特殊文件。
+- 源稳定性。
+- 网盘空间。
+- ZIP 临时目录。
+- 任务窗口。
+
+发现阻断数据库后，不创建 ZIP。
+
+### 10.3 数据库识别
+
+SQLite 通过文件头识别：
 
 ```text
-tenant_uid = LAZYCAT_APP_DEPLOY_UID
+SQLite format 3\0
 ```
 
-网盘公共文稿根目录由平台按当前容器会话提供，代码固定使用
-`/lzcapp/document`，不拼接 UID，也不接受 `storage_uid` 参数或用户选择。
+服务型数据库使用文件与目录签名。特征规则集中在兼容性模块中，并带版本号。
 
-### 9.2 应用文稿可见范围
+## 11. ZIP 备份引擎
 
-备份应用使用多实例模式并声明 `document.write`。当前容器只允许使用当前实例所属用户的懒猫网盘公共文稿目录：
+### 11.1 格式变更
+
+当前 POC：
 
 ```text
-/lzcapp/document
+snapshot.tar.gz
 ```
 
-启动时执行：
-
-1. 读取 `tenant_uid`。
-2. 固定使用平台提供的当前用户网盘根目录 `/lzcapp/document`。
-3. 检查该路径已由平台挂载，避免在容器可写层中创建同名目录。
-4. 如果公共网盘根目录不可见或不可写，进入安全阻断状态并停止调度器。
-5. 在网盘根目录下创建产品根目录。
-
-### 9.3 根目录
+V1：
 
 ```text
-/lzcapp/document/LazycatAppBackup/
+snapshot.zip
 ```
 
-`LazycatAppBackup` 使用稳定英文目录名，界面按语言显示“懒猫应用备份”或“Lazycat App Backup”。
+删除 `compress/gzip` 和 tar 写入链路，改用 Go `archive/zip`。扫描、源读取、SHA-256 和目标目录逻辑保持不变。
 
-### 9.4 物理目录树
-
-每个用户拥有独立根目录，因此物理树无需增加 owner 层级：
+### 11.2 最终目录
 
 ```text
 LazycatAppBackup/
-├── <scheduled_at>/
-│   ├── batch.json
-│   └── <source_deploy_id>/
-│       └── <application_slug>/
-│           ├── manifest.json
-│           ├── file-index.jsonl.zst
-│           ├── files-000001.tar.zst
-│           ├── files-000002.tar.zst
-│           ├── sqlite/
-│           │   └── <encoded_relative_path>.sqlite
-│           ├── checksums.sha256
-│           ├── warnings.json
-│           └── COMPLETED
-├── _partial/
-├── _restore_exports/
-├── _trash/
-└── _system/
+└── <scheduled_at>/
+    └── <deploy_id>/
+        ├── snapshot.zip
+        └── manifest.json
 ```
 
-目录层级满足：
+`scheduled_at`：
 
 ```text
-备份时间点 → deploy_id → 应用名称
+yyyyMMdd'T'HHmmss.SSS'Z'
 ```
 
-### 9.5 命名规则
+碰撞时追加短批次 ID。
 
-- `scheduled_at` 使用 UTC，格式 `yyyyMMddTHHmmss.SSSZ`。
-- `source_deploy_id` 经过路径安全编码。
-- `application_slug` 使用安全化应用名称加稳定 appid 后缀。
-- 应用改名不搬迁旧快照。
-- 同一毫秒发生冲突时追加批次短 ID。
-- 路径移除分隔符、控制字符、尾部空格和保留名称。
-
-### 9.6 Manifest 用户字段
-
-每个 `manifest.json` 必须保存：
+### 11.3 ZIP 内部结构
 
 ```text
+snapshot.zip
+├── appvar/
+│   └── <源相对路径>
+└── _snapshot/
+    ├── manifest.json
+    ├── file-index.jsonl
+    └── warnings.json
+```
+
+### 11.4 ZIP 写入
+
+流程：
+
+1. 在 `_partial/<job_id>` 创建临时 ZIP。
+2. 创建 `zip.Writer`。
+3. 遍历已通过预检的文件计划。
+4. 为目录和普通文件创建安全 Entry。
+5. 普通文件流式复制。
+6. SQLite 使用临时一致性副本。
+7. 写入内部文件索引和 warnings。
+8. 生成内部 manifest。
+9. 关闭 ZIP。
+10. fsync。
+11. 计算 ZIP SHA-256。
+12. 移动 ZIP 到最终目录。
+13. 最后写外部 manifest。
+14. 更新控制库。
+
+### 11.5 压缩策略
+
+- 文本、JSON、数据库和普通二进制使用 Deflate。
+- ZIP、GZIP、Zstandard、JPEG、PNG、音视频等已压缩格式使用 Store。
+- 压缩级别由设置控制。
+- 使用 ZIP64 支持大文件和大量 Entry。
+- 单文件流式处理，不将完整文件读入内存。
+
+### 11.6 时间和权限
+
+ZIP Entry 保存：
+
+- 相对路径。
+- 文件类型。
+- 修改时间。
+- Unix 权限位。
+- 原始大小。
+
+不保存宿主机绝对路径和用户凭据。
+
+## 12. SQLite 一致性快照
+
+### 12.1 识别和排除
+
+识别标准 SQLite 后：
+
+- 主数据库不进入普通文件复制。
+- 对应 `-wal`、`-shm` 和 `-journal` 不单独复制。
+- 创建 SQLite 任务。
+
+### 12.2 在线备份
+
+1. 以只读方式打开源 SQLite。
+2. 在 `/lzcapp/cache/jobs/<job_id>/sqlite` 创建临时目标。
+3. 使用 SQLite Online Backup API 分页复制。
+4. 处理 busy 和 locked 重试。
+5. 执行 `PRAGMA quick_check`。
+6. 将临时快照写入 ZIP 中原始相对路径。
+7. 清理临时文件。
+
+失败时任务失败，不回退为普通复制。
+
+### 12.3 加密 SQLite
+
+SQLCipher 或无法识别格式的数据库被阻断。V1 不要求用户提供数据库密钥。
+
+## 13. 普通文件一致性
+
+普通文件采用尽力一致：
+
+1. 打开前记录 size、mtime 和 inode。
+2. 只读复制到 ZIP。
+3. 复制后再次 stat。
+4. 文件发生变化时重试。
+5. 达到重试上限后：
+   - 严格模式：任务失败。
+   - 宽松模式：任务成功但有警告。
+
+默认使用严格模式处理配置和索引目录。
+
+## 14. Manifest
+
+### 14.1 外部 Manifest
+
+最终目录中的 `manifest.json` 至少包含：
+
+```text
+format_version
+product_version
+status
 tenant_uid
-source_owner_uid
-backup_app_deploy_id
-source_deploy_id
+oidc_subject
+user_role
 appid
-应用名称快照
-应用版本
+application_name
+application_version
+deploy_id
+multi_instance
+shared_instance_warning
+plan_id
+batch_id
+job_id
+trigger_type
 scheduled_at
 started_at
 captured_at
 finished_at
-任务和批次 ID
-备份模式
-SQLite 列表
-文件统计
-校验和
+source_provider
+source_provider_version
+source_readonly_mode
+archive_name
+archive_size
+archive_sha256
+file_count
+directory_count
+sqlite_count
+skipped_count
+warning_count
+original_bytes
+zip_bytes
+compression_ratio
+consistency
 ```
 
-提交前断言：
+不保存文件正文、OIDC Token 和源绝对路径。
+
+### 14.2 内部 Manifest
+
+ZIP 中 `_snapshot/manifest.json` 与外部 manifest 使用同一业务内容。外部 manifest 可以增加最终 ZIP 哈希；内部 manifest 对应字段在写入 ZIP 时留空或标记为 `calculated_after_close`。
+
+### 14.3 完成协议
+
+外部 manifest 最后写入：
+
+```json
+{
+  "status": "completed",
+  "archive_name": "snapshot.zip"
+}
+```
+
+备份库只索引：
+
+- manifest 存在。
+- status 为 completed。
+- ZIP 存在。
+- ZIP 大小一致。
+- ZIP SHA-256 一致。
+
+不再创建 `COMPLETED` 文件。
+
+## 15. 网盘存储
+
+### 15.1 当前路径
+
+保持 POC 已验证路径：
 
 ```text
-tenant_uid == source_owner_uid
+BACKUP_DOCUMENT_ROOT=/lzcapp/document
 ```
 
-### 9.7 临时提交
-
-任务先写入：
+产品根：
 
 ```text
-_partial/<batch_id>/<job_id>/
+/lzcapp/document/LazycatAppBackup
 ```
 
-提交步骤：
+该目录对应当前用户自己的懒猫网盘。
 
-1. 完成普通文件归档和 SQLite 副本。
-2. 关闭全部文件。
-3. flush 和 fsync。
-4. 写入文件索引、warnings 和 checksums。
-5. 写入最终 manifest。
-6. 在同一用户网盘根内移动到最终目录。
-7. 最后创建 `COMPLETED`。
-8. 控制数据库提交快照状态。
+### 15.2 StorageProvider
 
-任何失败只影响当前用户当前任务，不触碰其他用户目录。
+存储模块只暴露相对路径操作：
 
-## 10. 控制数据库
+- CreatePartial。
+- OpenWriter。
+- Rename。
+- WriteManifest。
+- Stat。
+- RemovePartial。
+- MoveToTrash。
+- FreeSpace。
 
-### 10.1 位置
+业务层不直接拼接宿主机路径。
+
+### 15.3 临时和回收站
 
 ```text
-/lzcapp/var/control/control.db
+LazycatAppBackup/
+├── _partial/
+├── _restore_exports/
+├── _trash/
+└── <scheduled_at>/
 ```
 
-多实例容器天然拥有各自的 `/lzcapp/var`，不同用户不会共享控制数据库。
+失败任务保留短时间后清理。删除快照先进入 `_trash`，宽限期后物理删除。
 
-### 10.2 数据域
+### 15.4 快照索引
 
-控制库保存：
+外部 `manifest.json` 是备份库索引入口。后台定期扫描当前用户的 `LazycatAppBackup` 根目录，对账：
 
-- 当前租户元数据。
-- 当前用户拥有的目标应用实例。
-- 能力检测结果。
-- 备份计划。
-- 备份批次。
-- 实例任务和 attempt。
-- 快照摘要。
-- 保留策略。
-- 告警和通知记录。
-- 调度器租约。
-- 当前用户设置。
+- 控制库有记录、网盘文件存在。
+- 网盘有 manifest、控制库缺少记录。
+- ZIP 缺失。
+- manifest 状态异常。
+- ZIP 大小或 SHA-256 不一致。
+- `_partial` 超期。
+- `_trash` 到期。
 
-不保存：
+对账只读取当前用户网盘。
 
-- 盒子全部用户目录。
-- 其他用户应用实例。
-- 管理员统一配置。
-- 文件正文。
-- 完整文件索引。
-- 完整归档载荷。
+### 15.5 快照校验
 
-### 10.3 租户字段
+快速校验：
 
-即使控制库已经物理隔离，核心表仍保存 `tenant_uid`，并在唯一索引中使用它。目的包括：
+- 外部 manifest 格式。
+- ZIP 是否存在。
+- ZIP 大小。
+- ZIP SHA-256。
+- ZIP 中内部 manifest 是否存在。
 
-- 防止导入错误控制库后误读。
-- 对账 manifest。
-- 日志审计。
-- 未来迁移时保持明确边界。
+完整校验：
 
-启动时如果数据库 tenant 与环境 tenant 不一致，后端进入 `TENANT_DATABASE_MISMATCH` 阻断状态。
+- 遍历全部 ZIP Entry。
+- 验证 ZIP CRC。
+- 对比文件索引数量和大小。
+- 检查危险路径。
+- 对 SQLite Entry 临时解压后执行 `quick_check`。
+- 更新快照完整性状态。
 
-## 11. 调度与大规模任务
+### 15.6 保留策略
 
-### 11.1 每用户独立调度
+每次成功提交后执行：
 
-每个用户实例只加载该用户的计划。不存在跨用户总调度器，也不在管理员容器中创建其他用户任务。
+1. 读取计划保留策略。
+2. 按最近、每日、每周和每月规则选出保留集合。
+3. 至少保留一份校验通过快照。
+4. 校验失败时暂停自动删除。
+5. 待删除快照先移动到 `_trash`。
+6. 宽限期结束后物理删除。
+7. 删除结果写入活动记录和告警。
 
-### 11.2 批次展开
+### 15.7 恢复副本导出
 
-计划触发时：
+V1 只导出到当前用户网盘：
 
-1. 读取当前 `tenant_uid`。
-2. 重新同步当前用户拥有的多实例应用。
-3. 计算匹配目标。
-4. 排除共享实例、无数据和不支持数据库。
-5. 在一个事务中创建批次。
-6. 分块插入实例任务。
-7. 所有任务共享 `scheduled_at`。
-8. 由有界工作池领取任务。
+```text
+LazycatAppBackup/_restore_exports/<export_id>/
+```
 
-容量目标：
+导出流程：
 
-- 单个用户控制库支持至少 10,000 条应用实例记录。
-- 单个用户计划可匹配至少 5,000 个目标实例。
-- 5,000 个任务记录在基准设备上 10 秒内完成展开和持久化，不包含文件扫描和网盘写入。
-- 不为每个目标创建常驻 goroutine。
+- 检查可用空间。
+- 校验 ZIP。
+- 拒绝绝对路径和 `..`。
+- 不跟随 ZIP 内符号链接。
+- 不覆盖已有目录。
+- 解压完成后对比文件数量和大小。
+- 不写入目标应用 appvar。
 
-### 11.3 工作池
+## 16. 计划与调度
 
-内部工作池至少区分：
+### 16.1 计划类型
 
-- 元数据探测池。
-- 小型普通文件池。
-- 大型普通文件池。
-- SQLite 在线快照池。
-- 校验池。
-- 清理池。
+- 手动。
+- 每小时。
+- 每天。
+- 每周。
+- 五段 Cron。
 
-调度同时受以下预算控制：
+### 16.2 目标
 
-- CPU。
-- 内存。
-- 源磁盘读取吞吐。
-- 当前用户网盘写入吞吐。
-- 文件描述符。
-- `/lzcapp/cache` 临时空间。
-- `_partial` 空间。
-- 单文件大小和任务估算大小。
+- 单个应用实例。
+- 多个应用实例。
+- 当前用户未来新增的可备份应用。
 
-### 11.4 同实例互斥
+计划不保存其他用户 UID。
+
+### 16.3 触发
+
+1. 计算到期计划。
+2. 重新同步当前用户应用目录。
+3. 展开目标。
+4. 执行能力预检。
+5. 创建批次和任务。
+6. 保存统一 `scheduled_at`。
+7. Worker 受控执行。
+
+### 16.4 补跑
+
+应用实例重启后：
+
+- 加载计划。
+- 找出补跑窗口内漏掉的执行点。
+- 创建补跑批次。
+- 超过最大延迟的执行点标记跳过并告警。
+
+### 16.5 后台运行和漏跑
+
+`background_task: true` 保持启用。
+
+多实例应用在微服重启后的自动启动行为必须通过真机回归。无活动实例时，系统不能承诺计划按时触发，因此实现以下保障：
+
+- 每次用户打开应用后立即计算漏跑。
+- 设置页显示最近调度心跳。
+- 超过补跑窗口的任务记录为跳过。
+- 无法保证无人值守时在页面显示明确说明。
+- 后续如平台支持 owner 级自启动，直接接入，不改变计划模型。
+
+## 17. 持久化任务队列
+
+### 17.1 状态
+
+```text
+QUEUED
+LEASED
+PRECHECKING
+SCANNING
+SQLITE_SNAPSHOT
+ZIP_WRITING
+VERIFYING
+COMMITTING
+SUCCEEDED
+SUCCEEDED_WITH_WARNINGS
+FAILED
+CANCELLED
+TIMED_OUT
+SKIPPED
+INTERRUPTED
+```
+
+### 17.2 租约
+
+Worker 获取任务时写入：
+
+- worker ID。
+- lease token。
+- lease expires at。
+- heartbeat at。
+
+过期租约由恢复器回收。
+
+### 17.3 实例锁
 
 锁键：
 
 ```text
-tenant_uid + source_deploy_id
+tenant_uid + deploy_id
 ```
 
-同一个用户的同一个目标实例同一时间只运行一个备份、校验或导出任务。
+同一个实例不能并发执行两个备份任务。
 
-### 11.5 多用户设备压力
+### 17.4 幂等
 
-不同用户拥有不同备份容器，V1 不建立跨用户协调服务。为避免多个家庭成员同时启动大量任务：
-
-- 每个容器使用保守默认并发。
-- 每个容器设置 CPU、内存和 I/O 预算。
-- 计划支持备份窗口。
-- 可对同一逻辑时间使用基于 `tenant_uid` 的确定性微小抖动，目录中的 `scheduled_at` 保持原计划时间。
-- 页面展示实际 `started_at` 和 `captured_at`。
-
-## 12. 单任务执行
-
-1. 从任务记录读取 `tenant_uid` 和目标实例。
-2. 校验任务 tenant 等于进程 tenant。
-3. 重新调用当前用户 `QueryApplication`。
-4. 确认目标仍存在、为多实例且 owner 等于 tenant。
-5. 通过 SourceResolver 获取只读 appvar 根。
-6. 检查当前用户网盘根和剩余空间。
-7. 创建 `_partial` 任务目录。
-8. 完整扫描文件类型和数据库特征。
-9. 遇到已知不支持数据库时终止。
-10. 为 SQLite 创建一致性副本。
-11. 普通文件流式写入 tar + zstd 分片。
-12. 写入文件索引和 SHA-256。
-13. 复核不稳定文件。
-14. 写入 manifest。
-15. 创建 `COMPLETED`。
-16. 更新控制库和 SSE。
-17. 执行当前用户保留策略。
-18. 清理当前任务临时资源。
-
-任一步发现 owner 变化或 tenant 不一致，任务立即失败并产生安全告警。
-
-## 13. 文件扫描
-
-### 13.1 支持条目
-
-- 普通文件。
-- 目录。
-- 未越出源根的安全符号链接，可按配置保留链接本身。
-- 标准 SQLite 主数据库。
-
-### 13.2 跳过条目
-
-- Unix Socket。
-- 命名管道。
-- 字符设备和块设备。
-- PID、Lock 和明确的运行时临时文件。
-- SQLite `-wal`、`-shm`、`-journal`，由 SQLite 专用流程处理。
-
-### 13.3 文件稳定性
-
-普通文件复制前后比较：
-
-- 大小。
-- 修改时间。
-- inode 或平台可用的文件标识。
-
-发生变化时有限重试。严格模式下持续变化会使任务失败；容错模式下任务可以完成但标记警告。SQLite 不使用该降级方式。
-
-### 13.4 数据库阻断
-
-预检识别：
-
-- PostgreSQL：`PG_VERSION`、`base/`、`global/`、`pg_wal/`。
-- MySQL/MariaDB：`ibdata1`、`mysql/`、`performance_schema/`。
-- MongoDB：`WiredTiger`、`collection-*.wt`。
-- Redis：`dump.rdb`、AOF 和 `appendonlydir/`。
-- 其他已知文件数据库签名。
-
-命中后状态为 `UNSUPPORTED_DATABASE`，整个实例不产生成功快照。
-
-## 14. SQLite 在线备份
-
-### 14.1 识别
-
-通过 SQLite 文件头识别，扩展名仅作为辅助。识别到 SQLCipher 或未知加密格式时阻断。
-
-### 14.2 执行
-
-1. 以只读方式打开源数据库。
-2. 目标文件创建在当前用户 `_partial/.../sqlite/`。
-3. 使用 SQLite Online Backup API 分页复制。
-4. 设置 busy timeout 和有限重试。
-5. 不使用忽略 WAL 实时状态的 immutable 假设。
-6. 关闭备份句柄。
-7. 对目标执行 `PRAGMA quick_check`。
-8. 计算 SHA-256。
-9. 归档或保留为独立 SQLite 文件。
-10. 提交成功后删除任务级临时状态。
-
-### 14.3 失败处理
-
-出现以下情况时任务失败：
-
-- 源投影无法满足 SQLite 锁和 WAL 读取语义。
-- `SQLITE_BUSY` 超出重试。
-- quick check 失败。
-- 目标网盘不支持所需随机写、fsync 或 rename 语义。
-
-不得回退成 `cp` 活动 `.db` 文件。
-
-## 15. API 与前端隔离
-
-### 15.1 API 原则
-
-所有接口隐式绑定当前 `tenant_uid`。URL 和请求体不出现可切换租户的字段。
-
-接口类别：
-
-- 当前会话和运行环境。
-- 当前用户应用实例。
-- 当前用户能力检测。
-- 当前用户计划。
-- 当前用户批次和任务。
-- 当前用户快照。
-- 当前用户存储状态。
-- 当前用户告警和设置。
-- 当前用户 SSE。
-
-### 15.2 禁止字段
-
-前端不得提交：
+批次幂等键：
 
 ```text
-owner_uid
-storage_uid
-other_uid
-tenant_uid
-source_absolute_path
+tenant_uid + plan_id + scheduled_at
 ```
 
-`source_deploy_id` 可以作为资源 ID 传入，但后端必须在当前用户目录中重新解析。
+任务幂等键：
 
-### 15.3 列表行为
+```text
+batch_id + deploy_id
+```
 
-- 应用列表只展示当前用户可见的应用。
-- 多实例且 owner 匹配的应用可以备份。
-- 单实例应用展示“共享实例不支持”。
-- 不展示其他家庭成员昵称、UID、任务和快照。
-- 页面无需 owner 筛选器和用户切换器。
+## 18. 并发和规模
 
-### 15.4 SSE
+### 18.1 工作池
 
-SSE 连接建立时绑定请求 tenant。事件总线按 tenant 分区，发送前再次确认事件 tenant 等于连接 tenant。
+独立工作池：
 
-## 16. 国际化
+- 元数据探测。
+- 普通 ZIP。
+- SQLite。
+- 校验。
+- 清理。
 
-### 16.1 前端
+### 18.2 资源预算
 
-Next.js 使用 `next-intl`：
+并发由以下预算共同限制：
+
+- CPU。
+- 可用内存。
+- 磁盘读取吞吐。
+- 网盘写入吞吐。
+- 文件描述符。
+- 临时空间。
+- 单任务大小。
+
+不为每个任务直接创建长期 goroutine。
+
+### 18.3 容量目标
+
+每个用户实例：
+
+- 至少 10,000 条应用实例记录。
+- 单批次至少 5,000 个任务记录。
+- 5,000 个任务在 10 秒内完成持久化展开，不包含扫描和写入。
+- 100,000 条任务历史可分页查询。
+- 单文件大小不决定内存占用。
+
+## 19. 控制数据库
+
+### 19.1 数据域
+
+控制库保存当前用户的数据：
+
+- OIDC 登录事务。
+- OIDC 会话。
+- 用户快照。
+- 应用。
+- 应用实例。
+- 能力检测。
+- 计划。
+- 批次。
+- 任务。
+- 任务尝试。
+- 快照。
+- ZIP 文件索引元数据。
+- 告警。
+- 设置。
+- 审计记录。
+- 事件序列。
+- 分布式租约和实例锁。
+
+控制库在每用户 `/lzcapp/var/backup.sqlite` 运行版本化迁移。数据库启用 WAL、外键和 busy timeout；阶段 1–4 已加入 OIDC 登录事务、会话、应用、应用实例、数据库发现、目录同步、计划、批次、任务、快照和存储记录，阶段 5 的迁移加入设置、告警、审计和事件序列。
+
+### 19.2 租户字段
+
+所有业务表保存 `tenant_uid`。虽然多实例容器已经隔离，数据库仍保留该字段用于：
+
+- 一致性断言。
+- 审计。
+- 防止未来改为单实例后误混数据。
+- 数据导入和迁移校验。
+
+### 19.3 索引
+
+关键索引：
+
+- tenant + appid。
+- tenant + deploy_id。
+- tenant + plan status。
+- tenant + task status + priority。
+- tenant + scheduled_at。
+- tenant + snapshot captured_at。
+- tenant + alert unread。
+
+## 20. API
+
+### 20.1 OIDC
+
+```text
+GET  /auth/login
+POST /auth/login
+GET  /auth/oidc/callback
+POST /auth/logout
+GET  /api/session
+```
+
+### 20.2 应用
+
+```text
+GET  /api/applications
+POST /api/applications/sync
+GET  /api/applications/{appid}
+GET  /api/instances/{deploy_id}
+POST /api/instances/{deploy_id}/probe
+POST /api/instances/{deploy_id}/backup
+GET  /api/backup-jobs/{id}
+```
+
+阶段 4 已把手动请求纳入持久化批次与任务队列。请求只能携带当前目录中的 `deploy_id`；共享实例风险作为展示与快照元数据，不阻断入队。请求完成鉴权和实例校验后，以不随浏览器断开取消的上下文写入批次与任务；作业状态、错误码、批次、任务和最终 `snapshot_id` 都按当前租户过滤。Worker 认领任务时写入 lease token、worker ID、到期时间和心跳；过期租约在启动时回收，可重试任务按计划中的退避重新排队。浏览器不能提交 tenant、owner、源路径或租约字段。
+
+### 20.3 计划
+
+```text
+GET    /api/plans
+POST   /api/plans
+GET    /api/plans/{id}
+PUT    /api/plans/{id}
+DELETE /api/plans/{id}
+POST   /api/plans/{id}/run
+POST   /api/plans/{id}/pause
+POST   /api/plans/{id}/resume
+```
+
+### 20.4 任务
+
+```text
+GET  /api/batches
+GET  /api/batches/{id}
+GET  /api/tasks
+GET  /api/tasks/{id}
+POST /api/tasks/{id}/cancel
+POST /api/tasks/{id}/retry
+```
+
+### 20.5 快照
+
+```text
+GET    /api/backups
+GET    /api/backups/{id}
+GET    /api/backups/{id}/files
+POST   /api/backups/{id}/verify
+POST   /api/backups/{id}/export
+DELETE /api/backups/{id}
+```
+
+阶段 3 已实现快照列表、详情和快速校验，阶段 4 在此基础上补齐备份库维护。
+
+阶段 4 已提供文件索引、快速/完整 ZIP 校验、导出到当前用户 `_restore_exports/`、移入 `_trash/`、存储扫描和过期临时/回收站清理。保留执行按计划的最近、每日、每周和每月规则选择快照，至少留下一个已验证快照；任一快照校验失败时暂停该计划的自动删除。导出拒绝 ZIP 路径穿越和符号链接，不写入目标应用。
+
+### 20.6 存储、告警和设置
+
+```text
+GET  /api/storage
+POST /api/storage/scan
+POST /api/storage/cleanup
+
+GET  /api/overview
+GET  /api/alerts
+POST /api/alerts/{id}/read
+POST /api/alerts/{id}/resolve
+POST /api/alerts/{id}/mute
+
+GET  /api/settings
+PUT  /api/settings
+
+GET  /api/audit
+```
+
+阶段 5 的 overview 聚合当前租户的应用保护状态、计划、任务、告警、最近审计和存储摘要。设置只开放语言、时区、补跑、重试、保留、回收站宽限期和站内提醒偏好等已被执行引擎采用或可安全展示的值；接口不接受用户 UID、宿主机路径、权限声明或未接入引擎的配置。告警、设置和审计均按当前会话 tenant 过滤。
+
+### 20.7 实时事件
+
+```text
+GET /api/events
+```
+
+SSE 事件包括 `batch.updated`、`task.updated`、`snapshot.updated`、`alert.created`、`storage.updated`、`audit.created` 和 `session.expiring`。事件只携带当前租户业务对象 ID、状态和安全摘要，不携带文件正文、源绝对路径、Token、Cookie 或其他用户信息。
+
+单次连接至多持续 25 秒，并使用事件 ID 支持短时重连。服务端只读取当前 tenant 的最近事件，浏览器在事件遗漏、断线或重启后重新调用 REST 接口读取 SQLite 中的权威状态。SSE 不承担状态恢复，也不作为唯一事实来源。
+
+## 21. 前端页面实现
+
+前端页面必须逐项覆盖 PRD。
+
+### 21.1 全局
+
+Vite 前端包含：
+
+- OIDC 入口和错误页。
+- 主布局。
+- 八个主菜单。
+- 详情页。
+- 计划向导。
+
+`prototype` 与 `api` 目录包含：
+
+- 布局。
+- 表格。
+- 状态。
+- 表单。
+- 弹窗。
+- 图表。
+- 反馈组件。
+
+正式接口客户端使用同源 Cookie。阶段 5 已将首次使用检查、概览、应用列表和详情、计划编辑、任务和批次详情、快照与文件索引、存储维护、告警、设置与审计接入正式 API。前端使用限时 SSE 触发 REST 刷新，不以 SSE 或本地状态替代权威数据，也不生成任务成功、进度、告警或配置保存的模拟结果。
+
+### 21.2 OIDC
+
+前端不保存 Token。所有请求使用同源 Cookie。收到 401 或 session.expiring 时进入重新登录流程。
+
+### 21.3 应用页面
+
+应用页面不提供用户、owner 和租户筛选。数据完全由当前会话接口返回。
+
+单实例显示共享实例警告；多实例显示用户隔离标签。
+
+### 21.4 POC 页面
+
+当前 POC 页面保留在开发目录或独立构建目标中：
+
+- 不出现在生产导航。
+- 不注册生产路由。
+- 不计入 PRD 验收。
+- 可在开发构建中用于投影和探测回归。
+
+### 21.5 PRD 页面与后端映射
+
+| PRD 页面 | 后端模块 | 主要接口 |
+| --- | --- | --- |
+| 首次使用向导 | auth、identity、platform、source、probe、storage | session、applications、probe、storage |
+| 概览 | operations、plans、queue、snapshots、storage | overview、events |
+| 应用 | catalog、source、probe | applications、instances、probe |
+| 应用详情 | catalog、probe、plans、queue、snapshots | application、instance、plans、tasks、backups |
+| 备份计划 | plans、scheduler、queue | plans CRUD、run、pause、resume |
+| 任务中心 | queue、operations | batches、tasks、cancel、retry、events |
+| 备份库 | snapshots、storage | backups、files、verify、export、delete |
+| 存储 | storage、snapshots、operations | storage、scan、cleanup、events |
+| 告警 | operations、queue | alerts、read、resolve、mute、events |
+| 设置与审计 | operations、auth、scheduler、queue、storage、i18n | session、settings、audit、events |
+
+任何 PRD 按钮必须对应后端能力和稳定错误码。前端不得以本地模拟状态替代尚未实现的业务接口。
+
+## 22. 项目目录结构
+
+以下为阶段 5 完成时的正式实现目录。POC 入口和构建目标独立保留，生产导航与正式 API 不注册 POC 诊断能力。
+
+```text
+lazycat-app-snapshot/
+├── apps/
+│   ├── server/
+│   │   ├── cmd/
+│   │   │   ├── server/
+│   │   │   └── poc/
+│   │   ├── internal/
+│   │   │   ├── auth/
+│   │   │   ├── identity/
+│   │   │   ├── domain/
+│   │   │   ├── platform/
+│   │   │   ├── catalog/
+│   │   │   ├── source/
+│   │   │   ├── probe/
+│   │   │   ├── backup/
+│   │   │   ├── storage/
+│   │   │   ├── plans/
+│   │   │   ├── scheduler/
+│   │   │   ├── queue/
+│   │   │   ├── snapshots/
+│   │   │   ├── operations/
+│   │   │   ├── httpapi/
+│   │   │   └── persistence/
+│   └── web/
+│       ├── public/
+│       └── src/
+│           ├── api/
+│           ├── i18n/
+│           ├── poc/
+│           └── prototype/
+├── api/
+│   └── openapi/
+├── lzc/
+├── package.yml
+├── lzc-manifest.yml
+├── lzc-build.yml
+└── lzc-build.poc.yml
+```
+
+## 23. 告警和通知
+
+告警源：
+
+- OIDC。
+- 身份不一致。
+- 权限。
+- 应用目录。
+- appvar 投影。
+- 数据库阻断。
+- SQLite。
+- ZIP。
+- 网盘。
+- 任务。
+- 校验。
+- 临时目录。
+- 控制库。
+- 补跑。
+
+阶段 5 已实现站内告警：最终失败任务会自动创建告警，用户可按当前租户读取、标记已读、处理或静默；计划、任务、快照、存储和设置操作写入当前租户审计。`user.notify` 仍是可选权限和后续外部通知边界，未授权或未验证时不会影响备份主流程。
+
+## 24. 国际化
+
+### 24.1 前端
+
+前端 locale 模块维护：
 
 ```text
 zh-CN
 en-US
 ```
 
-覆盖菜单、状态、错误、时间、容量、通知和空状态。
+翻译覆盖：
 
-### 16.2 后端
+- 菜单。
+- 页面。
+- 表单。
+- 状态。
+- 错误。
+- OIDC。
+- 告警。
+- 通知。
+- 日期和容量。
 
-后端返回稳定错误码和参数：
+阶段 5 已实现八个主菜单、首次使用页、详情抽屉和设置页的 `zh-CN`、`en-US` 文案。语言切换只改变当前浏览器显示和当前租户的安全设置，不提交或展示 Token、Cookie、用户目录或源路径。
+
+### 24.2 后端
+
+后端返回：
 
 ```json
 {
-  "code": "SHARED_INSTANCE_UNSUPPORTED",
-  "messageParams": {
-    "appid": "cloud.lazycat.app.example"
+  "code": "UNSUPPORTED_DATABASE",
+  "message": "Unsupported database detected",
+  "params": {
+    "databaseType": "PostgreSQL",
+    "relativePath": "pgdata"
   },
-  "traceId": "..."
+  "requestId": "..."
 }
 ```
 
-后端不向 API 返回硬编码展示句子。系统通知根据当前用户保存的语言生成。
+`message` 是安全的回退说明；前端使用稳定的 `code` 和 `params` 输出对应语言的提示。接口不返回 Token、Cookie、源绝对路径或其他用户信息。
 
-## 17. 代码目录结构
+## 25. 日志和可观测性
 
-目录名固定，具体文件名、类型名和函数名由执行模型根据实现需要确定。
+### 25.1 日志
 
-```text
-/
-├── apps/
-│   ├── web/
-│   │   ├── app/
-│   │   ├── components/
-│   │   ├── features/
-│   │   │   ├── session/
-│   │   │   ├── overview/
-│   │   │   ├── applications/
-│   │   │   ├── capabilities/
-│   │   │   ├── plans/
-│   │   │   ├── tasks/
-│   │   │   ├── snapshots/
-│   │   │   ├── storage/
-│   │   │   ├── alerts/
-│   │   │   ├── settings/
-│   │   │   └── diagnostics/
-│   │   ├── hooks/
-│   │   ├── lib/
-│   │   ├── i18n/
-│   │   ├── styles/
-│   │   ├── public/
-│   │   └── tests/
-│   └── server/
-│       ├── cmd/
-│       ├── internal/
-│       │   ├── tenant/
-│       │   ├── auth/
-│       │   ├── api/
-│       │   ├── platform/
-│       │   │   └── lazycat/
-│       │   ├── catalog/
-│       │   ├── capability/
-│       │   ├── source/
-│       │   ├── scheduler/
-│       │   ├── queue/
-│       │   ├── worker/
-│       │   ├── backup/
-│       │   │   ├── scanner/
-│       │   │   ├── database_detection/
-│       │   │   ├── sqlite/
-│       │   │   ├── archive/
-│       │   │   ├── checksum/
-│       │   │   └── manifest/
-│       │   ├── storage/
-│       │   │   └── documents/
-│       │   ├── snapshots/
-│       │   ├── retention/
-│       │   ├── alerts/
-│       │   ├── notifications/
-│       │   ├── realtime/
-│       │   ├── persistence/
-│       │   ├── migrations/
-│       │   ├── localization/
-│       │   ├── telemetry/
-│       │   └── diagnostics/
-│       ├── assets/
-│       └── tests/
-├── contracts/
-│   ├── openapi/
-│   ├── events/
-│   └── schemas/
-├── deploy/
-│   ├── lpk/
-│   ├── docker/
-│   └── environments/
-├── tests/
-│   ├── integration/
-│   ├── e2e/
-│   ├── isolation/
-│   ├── recovery/
-│   ├── load/
-│   └── fixtures/
-├── scripts/
-├── docs/
-└── tools/
-```
+字段：
 
-### 17.1 前端目录职责
-
-- `app/`：路由、布局、页面边界和静态导出入口。
-- `components/`：通用 UI 组件。
-- `features/session/`：当前用户与容器租户状态，只读展示。
-- `features/applications/`：当前用户应用目录和实例列表。
-- `features/capabilities/`：可备份性、共享实例和数据库阻断状态。
-- `features/plans/`：计划列表和向导。
-- `features/tasks/`：队列、批次和任务详情。
-- `features/snapshots/`：当前用户快照库。
-- `features/storage/`：当前用户网盘容量和目录健康，不提供 UID 选择。
-- `features/alerts/`：当前用户告警。
-- `features/settings/`：当前用户设置。
-- `i18n/`：语言路由、词条和格式化配置。
-
-### 17.2 后端目录职责
-
-- `tenant/`：从环境冻结租户，提供不可变 TenantContext。
-- `auth/`：校验 `X-HC-User-ID` 与 tenant。
-- `platform/lazycat/`：Lzc SDK、当前用户 QueryApplication、环境变量和通知适配。
-- `catalog/`：当前用户应用目录同步。
-- `capability/`：多实例校验、共享实例阻断和数据类型能力。
-- `source/`：用户级 SourceResolver 和只读路径验证。
-- `scheduler/`：当前用户计划、Cron、补跑和批次展开。
-- `queue/`：持久化队列、租约、重试和优先级。
-- `worker/`：有界工作池和资源预算。
-- `backup/`：扫描、数据库检测、SQLite、归档、校验和 manifest。
-- `storage/documents/`：只允许当前用户 `/lzcapp/document`。
-- `persistence/`：控制数据库和 tenant 约束。
-- `realtime/`：按 tenant 发布 SSE。
-- `diagnostics/`：不包含文件正文和其他用户信息的诊断包。
-
-## 18. 错误码
-
-用户隔离相关错误至少包括：
-
-```text
-MULTI_INSTANCE_REQUIRED
-TENANT_UID_MISSING
-TENANT_DEPLOY_ID_MISSING
-REQUEST_USER_MISSING
-REQUEST_USER_MISMATCH
-TENANT_DATABASE_MISMATCH
-INSTANCE_OWNER_MISMATCH
-SHARED_INSTANCE_UNSUPPORTED
-CROSS_USER_SOURCE_DENIED
-CROSS_USER_DOCUMENT_VIEW_DETECTED
-CURRENT_USER_CONTEXT_UNAVAILABLE
-APPVAR_PROJECTION_NOT_USER_SCOPED
-SOURCE_NOT_READ_ONLY
-```
-
-备份相关错误沿用：
-
-```text
-NO_DATA
-UNSUPPORTED_DATABASE
-UNKNOWN_DATABASE
-SQLITE_ONLINE_BACKUP_UNAVAILABLE
-SQLITE_INTEGRITY_CHECK_FAILED
-FILE_CHANGED_DURING_BACKUP
-DOCUMENT_STORAGE_UNAVAILABLE
-DOCUMENT_STORAGE_FULL
-SNAPSHOT_COMMIT_FAILED
-```
-
-## 19. 日志与审计
-
-每条结构化日志包含：
-
-- `tenant_uid_hash`。
-- `backup_app_deploy_id`。
-- `source_deploy_id_hash`。
-- `appid`。
-- `batch_id`。
-- `job_id`。
-- `trace_id`。
-- 阶段和错误码。
+- trace ID。
+- tenant hash。
+- appid。
+- deploy ID hash。
+- plan ID。
+- batch ID。
+- task ID。
+- stage。
+- error code。
+- duration。
+- bytes。
 
 不记录：
 
-- 原始文件正文。
+- OIDC Secret。
+- Token。
 - Cookie。
-- API Auth Token。
-- 其他用户 UID。
-- 可反推出其他用户网盘位置的路径。
-- SQLite 内容。
+- 文件正文。
+- 完整源绝对路径。
+- 其他用户信息。
 
-出现 owner mismatch、请求用户 mismatch 或跨用户路径时记录安全告警，并停止相关队列领取，等待重新诊断。
+### 25.2 指标
 
-## 20. 故障恢复
+- 应用同步耗时。
+- 探测任务数。
+- 队列深度。
+- 任务吞吐。
+- 读取和 ZIP 写入速度。
+- SQLite 耗时。
+- 成功率。
+- ZIP 压缩比。
+- 网盘剩余空间。
+- 会话登录失败率。
 
-### 20.1 当前用户实例重启
+## 26. 构建检查与真实平台外部确认
 
-1. 校验环境 tenant。
-2. 打开当前用户控制库。
-3. 校验控制库 tenant。
-4. 校验当前用户网盘根。
-5. 回收过期租约。
-6. 扫描当前用户 `_partial`。
-7. 对账当前用户 `COMPLETED`。
-8. 重新加载当前用户计划。
-9. 按补跑窗口创建漏跑任务。
-10. 恢复当前用户 SSE 状态。
+项目规则禁止新增、修改、生成或运行测试、验证代码和测试专用 fixture。本地检查只编译 Go 服务端与构建 Vite 前端，不运行测试套件，也不将构建结果视为平台行为的证明。
 
-### 20.2 用户退出或实例删除
+真实懒猫设备可记录以下外部确认：OIDC 回调；已登录业务请求的 `session.gateway_uid == X-HC-User-ID`；A/B 两个用户的目录、API 与快照隔离；当前用户网盘写入；后台启动和补跑；目标单实例与多实例处理；amd64 与 arm64 的运行结果。平台、权限、运行时投影或源解析器变化后，按 POC 回归手册重新确认已验证数据入口。这些确认不组成独立开发阶段。
 
-- 不删除当前用户网盘中的历史快照。
-- 备份应用实例被卸载并清理 appvar 后，控制库可能丢失，但应用文稿默认保留。
-- 重新安装后可扫描当前用户网盘 manifest 重建快照索引。
-- 不扫描或导入其他用户目录。
+## 27. 从 POC 迁移到 V1
 
-### 20.3 源应用卸载
+### 27.1 保留
 
-- 停止该 deploy ID 的新任务。
-- 保留当前用户已有快照。
-- 计划标记目标缺失。
-- 应用重新安装产生新 deploy ID 时视为新实例，不自动覆盖旧实例历史。
+- Lzc SDK 查询。
+- `WithRealUID`。
+- owner 过滤。
+- `appvar.other.read`。
+- `PERM_OTHER_APP_DATA_ADMIN`。
+- `/lzcapp/run/data/app/var`。
+- appid 布局。
+- 探测。
+- 数据库识别。
+- SHA-256。
+- `/lzcapp/document`。
+- 当前用户多实例部署。
 
-## 21. 测试方案
+### 27.2 替换
 
-### 21.1 双用户隔离测试
+```text
+tar.gz → ZIP
+Vite 原型入口 → Vite 正式入口
+临时 POC API → 正式领域 API
+内存状态 → SQLite 持久化状态
+手动单任务 → 调度器和队列
+原始 SQLite 读取 → Online Backup
+```
 
-准备用户 A 和 B：
+### 27.3 保留参考
 
-1. 两人分别打开备份应用，确认备份应用 `deploy_id` 不同。
-2. 两人的 `/lzcapp/var/control` 数据互不可见。
-3. 用户 A 的应用 API 不返回用户 B 的实例。
-4. 用户 A 猜测用户 B 的 source deploy ID 时返回 404 或 403。
-5. 用户 A 的 SourceResolver 无法解析用户 B appvar。
-6. 用户 A 的 `/lzcapp/document` 只对应 A 当前容器的公共网盘视图。
-7. 用户 A 快照只出现在 A 的懒猫网盘。
-8. 用户 B 无法通过 URL、API、SSE 或文件路径查看 A 快照。
-9. 管理员登录自己的实例也无法看到 A、B 的备份数据。
-10. 用户 A、B 同时执行任务时，各自控制库和目录保持独立。
+POC 页面和 API 可以继续在开发构建中存在，生产构建关闭。
 
-### 21.2 目标应用类型
+## 28. 发布与验收
 
-- 当前用户拥有的多实例普通文件应用。
-- 当前用户拥有的多实例 SQLite 应用。
-- 单实例共享应用。
-- owner 不匹配实例。
-- MySQL、PostgreSQL、MongoDB、Redis 应用。
-- 空 appvar 应用。
-- 系统应用和 LightOS。
+V1 发布前必须满足：
 
-### 21.3 调度测试
+1. OIDC 登录完整可用。
+2. 身份三方一致性通过。
+3. 普通用户和管理员都无法跨用户。
+4. 当前 POC 数据链路未回归。
+5. 单实例和多实例目标都能按规则处理。
+6. ZIP 替换完成。
+7. ZIP 内外 manifest 可用。
+8. SQLite Online Backup 通过。
+9. 不支持数据库阻断。
+10. 手动和定时备份可用。
+11. 重启恢复和补跑可用。
+12. 所有 PRD 页面可用。
+13. POC 页面不在生产导航。
+14. 中文和英文一致。
+15. amd64 和 arm64 通过真机测试。
 
-- 多实例应用启动后的后台常驻。
-- 微服重启后的自启动能力。
-- 自启动不可用时补跑。
-- 5,000 任务批次展开。
-- 备份窗口截止。
-- Worker 崩溃和租约回收。
-- 网盘变慢、空间不足和断开。
+阶段 0–5 完成本地实现。`mimi-app-backup-0.1.0.lpk` 已在 Go/Vite 构建检查通过后生成并完成本地 lint；真实平台确认不组成独立开发阶段。未获得用户明确授权时，不发布、部署、推送或创建合并请求。
 
-### 21.4 SQLite 测试
+## 29. 后续能力
 
-- WAL 模式持续写入。
-- 长事务。
-- busy 重试。
-- quick check 失败。
-- 网盘随机写和 rename。
-- 源投影锁语义不兼容。
+- 管理员跨用户备份，独立权限、授权和审计。
+- 恢复组件。
+- 服务型数据库适配器。
+- 应用备份协议。
+- Notus 专用 flush。
+- 增量、去重和内容寻址。
+- S3、WebDAV、SFTP 和 NAS。
+- 加密和密钥导出。
+- 恢复演练。
+- 系统应用官方接口。
 
-## 22. 真机 POC 发布门槛
+## 30. 参考资料
 
-以下项目全部通过后，V1 才进入正式开发完成阶段：
+- [懒猫 OIDC](https://developer.lazycat.cloud/advanced-oidc.html)
+- [懒猫 HTTP Headers](https://developer.lazycat.cloud/http-request-headers.html)
+- [懒猫多实例](https://developer.lazycat.cloud/advanced-multi-instance.html)
+- [懒猫开发者环境变量](https://developer.lazycat.cloud/advanced-envs.html)
+- [package.yml 权限规范](https://developer.lazycat.cloud/spec/package.html)
+- [lzc-manifest.yml 规范](https://developer.lazycat.cloud/spec/manifest.html)
+- [文件访问](https://developer.lazycat.cloud/advanced-file.html)
+- [当前项目仓库](https://github.com/dnwwdwd/lazycat-app-snapshot)
+- [SQLite Online Backup API](https://sqlite.org/backup.html)
+- [Go archive/zip](https://pkg.go.dev/archive/zip)
 
-1. 多实例备份应用能获得非空 `LAZYCAT_APP_DEPLOY_UID`，并能通过包路由访问自己的服务。
-2. 普通用户可以访问自己的备份应用实例，不依赖管理员页面。
-3. `X-HC-User-ID` 与 deploy UID 一致。
-4. Go 后台 Lzc SDK 查询默认绑定当前 deploy UID。
-5. `QueryApplication` 不传 `other_uid` 时只返回当前用户数据。
-6. `only_owner=true` 能稳定过滤当前用户拥有的实例。
-7. 用户 A 无法解析或读取用户 B 的 appvar。
-8. appvar 投影存在稳定 deploy ID 映射。
-9. appvar 投影保持只读。
-10. 多实例 `document.write` 只暴露当前用户的公共文稿根目录。
-11. 备份结果出现在当前用户自己的懒猫网盘。
-12. 管理员网盘不会收到其他用户快照。
-13. 单实例目标被稳定识别并阻断。
-14. SQLite Online Backup API 在只读投影下可用。
-15. 当前用户网盘支持 SQLite 目标随机写、fsync、close 和 rename。
-16. 多实例备份应用的自启动或补跑行为经过重启验证。
-
-任一跨用户隔离测试失败时停止发布，不使用管理员集中模式或宿主机权限兜底。
-
-## 23. V1 技术验收标准
-
-1. 备份应用以多实例运行。
-2. 普通用户和管理员都只访问自己的备份应用实例。
-3. 每个实例拥有独立控制库、计划、队列、告警和设置。
-4. 所有 HTTP 请求要求 `X-HC-User-ID == LAZYCAT_APP_DEPLOY_UID`。
-5. 后端从不使用 `QueryApplication.other_uid`。
-6. 应用目录只保存当前用户拥有的目标实例。
-7. 单实例共享应用被阻断。
-8. 用户 A 无法列出、读取、计划或查看用户 B 的任何数据。
-9. 源 appvar 只读。
-10. 普通文件可以流式写入当前用户网盘。
-11. SQLite 在应用运行时生成通过 quick check 的一致性副本。
-12. MySQL、PostgreSQL、MongoDB、Redis 和其他已知数据库被阻断。
-13. 网盘根固定为 `/lzcapp/document/LazycatAppBackup`。
-14. 页面和 API 不存在 storage UID、owner UID 和用户切换功能。
-15. 目录按 `scheduled_at → source_deploy_id → application_slug` 组织。
-16. 只有包含 `COMPLETED` 的目录进入快照库。
-17. 5,000 个当前用户目标可形成持久化批次，Worker 数量保持有界。
-18. 后端重启后能回收租约、对账 partial 并补跑。
-19. 中文和英文功能一致。
-20. amd64 与 arm64 真机通过隔离、备份、校验和重启测试。
-
-## 24. 后续能力
-
-后续版本可以增加：
-
-- 目标应用提供的用户级备份协议。
-- 在具备用户级导出 API 时支持单实例应用。
-- MySQL、PostgreSQL、MongoDB、Redis 官方备份适配器。
-- 当前用户快照恢复组件，独立申请写权限。
-- 当前用户自选网盘子目录。
-- 当前用户 S3、WebDAV、SFTP 和 NAS 目标。
-- 加密、去重、增量和异地灾备。
-
-跨用户集中管理必须作为独立产品能力设计，要求明确授权、审计和平台级隔离，不进入当前 V1。
-
-## 25. 参考资料
-
-- 懒猫 `package.yml` 权限规范：<https://developer.lazycat.cloud/spec/package.html>
-- 懒猫 `lzc-manifest.yml` 规范：<https://developer.lazycat.cloud/spec/manifest.html>
-- 懒猫多实例：<https://developer.lazycat.cloud/advanced-multi-instance.html>
-- 懒猫文件访问：<https://developer.lazycat.cloud/advanced-file.html>
-- 懒猫环境变量：<https://developer.lazycat.cloud/advanced-envs.html>
-- 懒猫 HTTP Headers：<https://developer.lazycat.cloud/http-request-headers.html>
-- 懒猫后台常驻文档：<https://github.com/lazycatapps/lzc-developer-doc/blob/lazycat-main/docs/advanced-background.md>
-- 懒猫 SDK：<https://developer.lazycat.cloud/introduction.html>
-- PackageManager Proto：<https://github.com/lib-x/lzc-sdk-rs/blob/main/proto/cloud/lazycat/apis/sys/package_manager.proto>
-- SQLite Online Backup API：<https://sqlite.org/backup.html>
-- SQLite WAL：<https://sqlite.org/wal.html>
-- Next.js App Router：<https://nextjs.org/docs/app>
-
-## 26. 变更记录
+## 31. 变更记录
 
 | 日期 | 文档版本 | 变更 |
 | --- | --- | --- |
-| 2026-08-24 | V1 | 按 Go + Next.js、普通文件与 SQLite、懒猫网盘存储、多实例和大规模调度架构重写 |
-| 2026-08-25 | V1 | 重构为每用户独立多实例模型；移除管理员集中发现与集中存储；快照固定写入当前用户网盘；阻断单实例共享应用和所有跨用户访问 |
+| 2026-08-27 | V1 | 参考 `agent-desk` 修正会话绑定：OIDC profile UID 与懒猫网关 UID 分开存储；回调保存 `X-HC-User-ID`，业务请求只比较 `session.gateway_uid` 与当前 `X-HC-User-ID`。 |
+| 2026-08-27 | V1 | `LAZYCAT_APP_DEPLOY_UID` 保持为登录事务内部作用域；正式子域名为 `mimi-app-backup`，POC 为 `mimi-app-backup-poc`。 |
+| 2026-08-27 | V1 | 单实例继续显示共享数据风险，但该提示不再要求确认框，也不阻断查看任务、手动备份或计划创建；手动入队完成校验后与浏览器请求取消解耦。 |
+| 2026-08-27 | V1 | 产品更名为“咪咪应用备份（Mimi App Backup）”，LPK 包标识改为 `mimi-app-backup`，正式与 POC 路由同步更新；Go/Vite 构建通过并生成 `mimi-app-backup-0.1.0.lpk`。 |
+| 2026-08-27 | V1 | OIDC 入口采用显式登录页和 `POST /auth/login`：仅在用户点击后创建 PKCE 登录事务；回调统一进入首页。浏览器遇到网关 UID 不匹配的旧会话会清理 Cookie 并回到登录页，API 返回 403。 |
+| 2026-08-27 | V1 | 删除阶段 6。阶段 0–5 构成完整本地实现路线；构建、LPK 打包和真实平台确认改为路线外事项，不再占用开发阶段。 |
+| 2026-08-27 | V1 | 阶段 5 完成本地实现：控制库新增当前租户的设置、告警、审计和事件序列；正式 API 新增 overview、alerts、settings、audit 和限时 SSE；八个主菜单及首次使用、详情、计划编辑、存储、告警和设置接入真实数据并提供中英文文案。外部 `user.notify`、OIDC 回调、网关 UID 会话绑定、A/B 隔离、网盘写入和后台补跑仍待真实平台验收；该阶段记录不包含 LPK 打包。 |
+| 2026-08-27 | V1 | 阶段 4 完成本地实现：计划 CRUD 与立即运行、Cron/时区/补跑、批次和任务租约、重试、重启回收、文件索引、导出、回收站、保留和存储维护 API；真实设备仍待验证后台启动、补跑和当前用户网盘行为。 |
+| 2026-08-27 | V1 | 阶段 3 增加当前租户手动备份闭环：完整预检、SQLite Online Backup、严格普通文件 ZIP、内外 manifest、SHA-256、快速校验、当前用户文稿目录原子提交、最小快照 API 与前端；计划和通用队列仍待后续阶段。 |
+| 2026-08-27 | V1 | 首个正式实现包采用 Vite/React 同源托管，加入 OIDC、SQLite 控制库、应用同步/探测和 OpenAPI 契约；ZIP、计划和队列仍待后续阶段。 |
+| 2026-08-27 | V1 | 对齐 PRD，增加 OIDC，保留 POC 链路，支持单/多实例，禁用管理员跨用户，改用 ZIP |

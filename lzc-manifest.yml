@@ -1,9 +1,10 @@
 application:
-  subdomain: app-backup-poc
+  subdomain: mimi-app-backup
   multi_instance: true
   background_task: true
+  oidc_redirect_path: /auth/oidc/callback
   routes:
-    - /=http://web.cloud.lazycat.app.backup.lzcapp:8080
+    - /=http://web.mimi-app-backup.lzcapp:8080
 
 services:
   web:
@@ -13,16 +14,22 @@ services:
     environment:
       - BACKUP_APP_DEPLOY_UID=${LAZYCAT_APP_DEPLOY_UID}
       - BACKUP_WEB_ROOT=/lzcapp/pkg/content/web
+      - BACKUP_CONTROL_DB=/lzcapp/var/backup.sqlite
       # document.write exposes the current user's public Lazycat Drive root.
       # The service refuses to create this root if the platform mount is absent.
       - BACKUP_DOCUMENT_ROOT=/lzcapp/document
       # LZCOS v1.6 creates this fixed in-container projection when
       # PERM_OTHER_APP_DATA_ADMIN is granted. No host path is inferred.
-      - BACKUP_POC_APPVAR_ROOT=/lzcapp/run/data/app/var
-      - BACKUP_POC_APPVAR_MODE=runtime-appvar
-      - BACKUP_POC_APPVAR_LAYOUT=appid
-      - BACKUP_POC_PROVIDER_VERSION=lzcos-runtime-appvar-v1
-      - BACKUP_POC_SDK_METHOD=${BACKUP_POC_SDK_METHOD}
+      - BACKUP_APPVAR_ROOT=/lzcapp/run/data/app/var
+      - BACKUP_APPVAR_MODE=runtime-appvar
+      - BACKUP_APPVAR_LAYOUT=appid
+      - BACKUP_PROVIDER_VERSION=lzcos-runtime-appvar-v1
+      - OIDC_CLIENT_ID=${LAZYCAT_AUTH_OIDC_CLIENT_ID}
+      - OIDC_CLIENT_SECRET=${LAZYCAT_AUTH_OIDC_CLIENT_SECRET}
+      - OIDC_ISSUER_URI=${LAZYCAT_AUTH_OIDC_ISSUER_URI}
+      - OIDC_AUTH_URI=${LAZYCAT_AUTH_OIDC_AUTH_URI}
+      - OIDC_TOKEN_URI=${LAZYCAT_AUTH_OIDC_TOKEN_URI}
+      - OIDC_USERINFO_URI=${LAZYCAT_AUTH_OIDC_USERINFO_URI}
     healthcheck:
       test_url: http://127.0.0.1:8080/api/health
       start_period: 10s

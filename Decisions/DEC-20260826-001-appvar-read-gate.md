@@ -1,6 +1,6 @@
 # DEC-20260826-001 — `appvar.other.read` POC is a release gate
 
-**Status:** Confirmed by PDD V1; real-device validation pending  
+**Status:** Verified by passed POC on 2026-08-27
 **Related requirement:** REQ-20260826-001
 
 ## Decision
@@ -15,7 +15,7 @@ Use the PDD's per-user, multi-instance model. The POC may read only a target tha
 
 ## Gate and rollback
 
-If either user can enumerate, open, or read the other user's source, or if the source projection is writable, stop the V1 backup-engine path. Remove the POC package from the test box if needed; do not introduce a privileged workaround.
+The POC passed this gate. If a later platform, permission, projection, or resolver change lets either user enumerate, open, or read the other user's source, or makes the source projection writable, stop the affected V1 path. Do not introduce a privileged workaround.
 
 ## Read-only evidence policy
 

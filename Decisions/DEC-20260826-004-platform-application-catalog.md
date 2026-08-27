@@ -12,4 +12,4 @@ The previous fixture-only loader returned `APPLICATION_CATALOG_NOT_READY` in a r
 
 ## Validation boundary
 
-Local tests validate owner filtering and the existing recursive probe/snapshot contract. A real box must still prove that the SDK call resolves the current user, that only the user's applications are returned, and that each returned deploy ID maps to a read-only appvar projection. This decision does not claim that the source resolver is complete.
+Local tests validate owner filtering and the existing recursive probe/snapshot contract. The passed two-user POC also verified that the SDK resolves the current user, returns only that user's applications, and maps an eligible deploy ID to the runtime projection. Re-run the device matrix if the platform SDK, permission declaration, projection, or resolver changes.
