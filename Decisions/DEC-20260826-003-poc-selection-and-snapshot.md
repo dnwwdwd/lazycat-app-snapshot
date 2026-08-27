@@ -2,7 +2,7 @@
 
 ## Decision
 
-The POC UI opens on an application-selection flow. The user selects a current-tenant, multi-instance application, the server recursively inspects its resolved appvar, and one manual read snapshot can be written to the current user's private documents.
+The POC UI opens on an application-selection flow. The user selects a current-tenant, multi-instance application, the server recursively inspects its resolved appvar, and one manual read snapshot can be written to the current user's public Lazycat Drive document root (`/lzcapp/document`).
 
 The browser submits only a validated `deploy_id` for selection/snapshot and a relative path for the SHA-256 probe. It never submits a source absolute path, owner UID, storage UID, or another-user selector. The Go service resolves the source from a server-side platform adapter or the explicit fixture catalog, rechecks ownership and multi-instance state, classifies SQLite/service-database signatures, and rejects unsupported database snapshots.
 

@@ -93,7 +93,7 @@ V1 不实现以下能力：
 V1 所需权限：
 
 - `appvar.other.read`：读取其他应用实例的 `appvar`。
-- `document.private`：将用户可理解的备份归档写入备份应用自己的懒猫网盘文稿目录。
+- `document.write`：将用户可理解的备份归档写入当前用户的懒猫网盘公共文稿目录。
 - `user.notify`：可选，用于发送系统通知。
 
 被备份应用无需声明或开启任何权限。权限由备份应用申请并获得系统授权。
@@ -260,7 +260,7 @@ appid + instance_key + owner_uid
 功能：
 
 - 检查 `appvar.other.read`。
-- 检查 `document.private`。
+- 检查 `document.write`。
 - 检查可选 `user.notify`。
 - 验证当前访问者为管理员。
 - 未授权必需权限时禁止继续。
@@ -271,9 +271,8 @@ appid + instance_key + owner_uid
 
 功能：
 
-- 列出微服用户 UID、昵称和管理员角色。
-- 选择备份归档所属的网盘用户，默认当前管理员。
-- 创建或检测默认根目录 `懒猫应用备份`。
+- 使用当前登录用户的网盘身份，不提供其他用户 UID 选择器。
+- 创建或检测当前用户网盘中的默认根目录 `LazycatAppBackup`。
 - 检查读写、重命名、删除临时文件和剩余空间。
 - 明确显示真实容器路径和网盘中的展示位置。
 
@@ -809,7 +808,7 @@ V1 可以将归档解压到备份应用网盘中的独立恢复目录，用于�
 默认使用稳定、与界面语言无关的 `LazycatAppBackup` 根目录，物理结构固定为“计划备份时间点 → 实例 → 应用”：
 
 ```text
-/lzcapp/documents/<storage_uid>/LazycatAppBackup/
+/lzcapp/document/LazycatAppBackup/
   <scheduled_at>[__<batch_short_id>]/
     batch.json
     <deploy_id 或 shared-instance-key>/
@@ -955,7 +954,7 @@ V1 不支持任意宿主机路径。
 展示：
 
 - `appvar.other.read`。
-- `document.private`。
+- `document.write`。
 - `user.notify`。
 - 当前应用 `deploy_id`。
 - 当前存储 UID。
@@ -1236,7 +1235,7 @@ V1 不支持任意宿主机路径。
 
 ### 25.1 权限和发现
 
-- 能检测 `appvar.other.read` 和 `document.private`。
+- 能检测 `appvar.other.read` 和 `document.write`。
 - 能获取应用、`deploy_id`、owner 和多实例状态。
 - 能识别备份应用自身并排除递归备份。
 - 能识别空 `appvar`、无投影和权限拒绝。
@@ -1252,7 +1251,7 @@ V1 不支持任意宿主机路径。
 
 ### 25.3 网盘存储
 
-- 备份数据写入 `/lzcapp/documents/<storage_uid>/懒猫应用备份`。
+- 备份数据写入 `/lzcapp/document/LazycatAppBackup`。
 - 目录树严格按 `scheduled_at → deploy_id/instance_key → 应用名称` 组织；owner 信息写入清单并用于页面分组。
 - 容器 `/lzcapp/var` 不出现长期备份归档。
 - 失败任务只产生可识别的 `.partial`，不会进入正常备份库。

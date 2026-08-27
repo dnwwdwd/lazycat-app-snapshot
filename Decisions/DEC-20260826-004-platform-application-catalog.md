@@ -4,7 +4,7 @@
 
 The POC obtains the application catalog from the official Lzc SDK `PackageManager.QueryApplication` when it runs inside Lazycat. The frozen server-side `tenant_uid` is carried in the SDK's `X-Hc-User-Id` real-UID metadata because the API gateway does not infer a user from the app deploy UID. Every request uses an empty `deploy_ids` list, `only_owner=true`, and `ignore_pending_pkg=true`; `other_uid` is never set. The Go service filters the response again by the frozen `tenant_uid` before exposing any row to the browser.
 
-The adapter maps only application identity and instance metadata (`appid`, title, version, deploy ID, owner, and multi-instance state). It does not invent a source path. A selected application stays `SOURCE_NOT_READY` until an approved `appvar.other.read` source projection is mapped and verified on the device.
+The adapter maps only application identity and instance metadata (`appid`, title, version, deploy ID, owner, and multi-instance state). It does not invent a host source path. On LZCOS v1.6, the selected application is resolved through the fixed business-container projection enabled by `PERM_OTHER_APP_DATA_ADMIN`; if that projection is absent, it reports `RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE` until the app instance is re-authorized or recreated.
 
 ## Rationale
 

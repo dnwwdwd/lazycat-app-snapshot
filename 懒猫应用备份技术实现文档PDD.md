@@ -17,7 +17,7 @@ V1 采用“每个懒猫用户一个独立备份应用实例”的多实例部�
 - 每个用户打开应用后，系统为该用户启动独立的备份应用容器。
 - 每个容器只管理当前用户拥有的目标应用实例。
 - 每个容器拥有独立的 `/lzcapp/var`、控制数据库、计划、任务队列、快照索引和告警记录。
-- 每个容器只向 `/lzcapp/documents/<当前用户 UID>` 写入备份，不允许选择管理员或其他用户的 UID。
+- 每个容器只向当前用户的懒猫网盘公共文稿根目录 `/lzcapp/document` 写入备份，不允许选择管理员或其他用户的 UID。
 - 前端和后端不提供用户切换、owner 筛选、跨用户查询或管理员全局视图。
 - 目标应用必须是当前用户拥有的多实例应用，并且 `AppInfo.owner` 必须等于当前备份应用实例的 `LAZYCAT_APP_DEPLOY_UID`。
 - 单实例目标应用的 `/lzcapp/var` 可能同时包含多个用户的数据，V1 将其标记为“共享实例不支持”，不读取、不扫描、不备份。
@@ -25,7 +25,7 @@ V1 采用“每个懒猫用户一个独立备份应用实例”的多实例部�
 - 普通文件和目录使用文件级备份。
 - 标准 SQLite 使用 SQLite Online Backup API 创建一致性副本。
 - MySQL、PostgreSQL、MongoDB、Redis 以及其他已知数据库在预检阶段阻断。
-- 备份载荷直接写入当前用户自己的懒猫网盘应用文稿目录，不长期保存在备份应用容器中。
+- 备份载荷直接写入当前用户自己的懒猫网盘公共文稿目录，不长期保存在备份应用容器中。
 - 一个用户命中成百上千个应用实例时，系统先快速创建持久化任务，再由有界工作池按资源预算执行。
 
 ## 2. 用户隔离模型
@@ -116,7 +116,7 @@ POC 例外：服务端仍校验 `owner_uid == tenant_uid`、源路径边界和�
 - 向量索引、全文索引和自定义二进制目录，按文件级方式备份。
 - 标准 SQLite 3，通过 Online Backup API 生成一致性副本。
 - 单实例计划、应用全部实例计划、批量计划和 Cron 定时计划。
-- 将结果写入当前用户自己的懒猫网盘应用文稿目录。
+- 将结果写入当前用户自己的懒猫网盘公共文稿目录。
 - 中英文国际化。
 
 ### 3.2 明确不支持
@@ -143,7 +143,7 @@ POC 例外：服务端仍校验 `owner_uid == tenant_uid`、源路径边界和�
 6. 不允许前端提交源绝对路径。
 7. 不硬编码宿主机 `/data/appvar/<deploy_id>`。
 8. 不允许选择其他用户的网盘 UID。
-9. 目标根目录固定从 `/lzcapp/documents/<tenant_uid>` 派生。
+9. 目标根目录固定为平台提供的当前用户网盘路径 `/lzcapp/document`。
 10. 未写入 `COMPLETED` 的目录不算成功快照。
 11. 检测到不支持数据库时不降级为普通文件备份。
 12. SQLite 在线备份失败时不直接复制活动数据库文件。
@@ -235,7 +235,7 @@ locales:
 permissions:
   required:
     - appvar.other.read
-    - document.private
+    - document.write
   optional:
     - user.notify
 ```
@@ -259,17 +259,26 @@ services:
     environment:
       - BACKUP_APP_DEPLOY_UID=${LAZYCAT_APP_DEPLOY_UID}
       - BACKUP_WEB_ROOT=/lzcapp/pkg/content/web
+      - BACKUP_DOCUMENT_ROOT=/lzcapp/document
     healthcheck:
       test_url: http://127.0.0.1:8080/api/health
 ```
 
 POC 构建脚本将前端产物和静态 Linux amd64 Go 二进制放入 LPK 内容目录。运行脚本只启动二进制，不在容器启动时安装依赖或执行前端构建。服务不向 `/lzcapp/pkg/content` 写入数据，也不使用宿主机挂载。
 
-当前 POC 已实现“选择应用 → 递归探测 appvar → 手动读取快照”的服务端闭环。应用目录在 Lazycat 运行时通过官方 Lzc SDK 的 `QueryApplication` 获取，请求固定为空 `deploy_ids`、`only_owner=true`、`ignore_pending_pkg=true`，不传 `other_uid`；服务端还会再次过滤 `AppInfo.owner == tenant_uid`。本地 fixture 仍用于离线测试。浏览器只能提交已展示的 `deploy_id` 和相对文件路径；后端会再次校验 `owner_uid == tenant_uid`、路径未越界和数据库类型。多实例是 V1 的正式入口，单实例在 POC 中只增加共享数据警告。手动快照只写当前用户 `/lzcapp/documents/<tenant_uid>` 下的 POC 目录，响应只返回归档元数据和 SHA-256，不返回文件正文。
+当前 POC 已实现“选择应用 → 递归探测 appvar → 手动读取快照”的服务端闭环。应用目录在 Lazycat 运行时通过官方 Lzc SDK 的 `QueryApplication` 获取，请求固定为空 `deploy_ids`、`only_owner=true`、`ignore_pending_pkg=true`，不传 `other_uid`；服务端还会再次过滤 `AppInfo.owner == tenant_uid`。本地 fixture 仍用于离线测试。浏览器只能提交已展示的 `deploy_id` 和相对文件路径；后端会再次校验 `owner_uid == tenant_uid`、路径未越界和数据库类型。多实例是 V1 的正式入口，单实例在 POC 中只增加共享数据警告。手动快照只写当前用户 `/lzcapp/document` 下的 POC 目录，响应只返回归档元数据和 SHA-256，不返回文件正文。
 
-真实平台的 `QueryApplication` 目录适配已接入，appvar 投影到源根目录的官方映射仍需在设备上验证。目录可用但没有批准的源投影时，页面显示 `SOURCE_NOT_READY`，不会猜测宿主路径或伪造数据。POC 快照对 SQLite 采用原始读取，V1 的 SQLite Online Backup、调度和恢复能力仍未实现。
+真实平台的 `QueryApplication` 目录适配已接入。LZCOS v1.6 通过
+`PERM_OTHER_APP_DATA_ADMIN` 将 appvar 投影到业务容器固定路径
+`/lzcapp/run/data/app/var`，当前 POC 按 `appid` 映射并以应用层只读方式扫描；不会
+猜测宿主路径或伪造数据。若权限未生效或旧实例未重建，页面显示
+`RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE`。POC 快照对 SQLite 采用原始读取，V1 的
+SQLite Online Backup、调度和恢复能力仍未实现。
 
-设备验证中已观察到两类状态：应用目录查询可以返回当前用户的应用；选中应用后，如果 `appvar.other.read` 没有提供业务容器可见的只读源投影，报告会显示 `platform source resolver is not configured`。这表示平台源解析能力尚未接入当前包，不表示产品页面或应用目录不可做。解析器需要由 Lazycat 提供正式的只读文件投影/API；宿主侧 `/lzcsys/data/appvar/...` 路径不属于业务容器可用接口，不能作为实现替代。
+设备验证中已观察到两类状态：应用目录查询可以返回当前用户的应用；声明兼容权限的
+高权限应用可以看到 `/lzcapp/run/data/app/var` 全局投影。当前包已接入该运行时
+provider；仍需在两用户矩阵中确认 owner 过滤不会暴露其他用户 appvar。宿主侧
+`/lzcsys/data/appvar/...` 路径不属于业务容器可用接口，不能作为实现替代。
 
 ### 5.3 后台运行限制
 
@@ -401,7 +410,10 @@ tenant_uid + appid + source_deploy_id
 
 ### 8.1 `appvar.other.read`
 
-该权限只赋予读取能力。正式代码必须通过平台适配器解析源目录，不接受前端绝对路径，也不拼接宿主机路径。
+该权限只赋予读取能力。LZCOS v1.6 还需要在 `lzc-manifest.yml` 的
+`ext_config.permissions` 声明 `PERM_OTHER_APP_DATA_ADMIN` 才会向业务容器注入
+`/lzcapp/run/data/app/var` 兼容投影；该声明不是写权限。正式代码必须通过平台
+适配器解析源目录，不接受前端绝对路径，也不拼接宿主机路径。
 
 ### 8.2 SourceResolver 输入
 
@@ -431,6 +443,7 @@ source_deploy_id 在当前用户最新 QueryApplication 结果中存在
 - 对应 `source_deploy_id`。
 - 投影方式和适配器版本。
 - 是否只读。
+- 只读保障模式（例如 `filesystem` 或 `service-enforced`）。
 - 根目录设备和 inode 标识。
 - 最近验证时间。
 
@@ -442,7 +455,9 @@ source_deploy_id 在当前用户最新 QueryApplication 结果中存在
 2. 用户 B 的目标 `deploy_id` 传给用户 A 的 SourceResolver 时必须失败。
 3. 用户 A 无法通过目录遍历列出用户 B 的 appvar 根。
 4. 用户 A 无法 `stat`、打开或读取用户 B 的源文件。
-5. 用户 A 的源目录只读，无法创建、修改和删除。
+5. 用户 A 的源目录只读，无法创建、修改和删除。若使用 LZCOS v1.6 兼容投影
+   （内核 mount 可能是 `rw`），POC 至少必须证明服务代码只走读取系统调用；V1
+   仍要求平台提供内核级只读或等价强制能力。
 
 如果 `appvar.other.read` 在多实例容器中暴露全局可枚举 appvar，且平台没有提供用户级强制过滤或实例句柄，V1 不发布用户版。仅靠前端隐藏或 Go 业务过滤不足以宣称系统级用户隔离。
 
@@ -457,36 +472,37 @@ source_deploy_id 在当前用户最新 QueryApplication 结果中存在
 
 ## 9. 当前用户网盘存储
 
-### 9.1 固定存储 UID
+### 9.1 当前用户绑定
 
-存储 UID 固定为：
+备份实例的租户身份仍固定为：
 
 ```text
-storage_uid = tenant_uid = LAZYCAT_APP_DEPLOY_UID
+tenant_uid = LAZYCAT_APP_DEPLOY_UID
 ```
 
-前端不提供 UID 选择器。后端 API 不接受 `storage_uid` 参数。
+网盘公共文稿根目录由平台按当前容器会话提供，代码固定使用
+`/lzcapp/document`，不拼接 UID，也不接受 `storage_uid` 参数或用户选择。
 
 ### 9.2 应用文稿可见范围
 
-备份应用使用多实例模式并声明 `document.private`。当前容器只允许使用当前实例所属用户的应用文稿目录：
+备份应用使用多实例模式并声明 `document.write`。当前容器只允许使用当前实例所属用户的懒猫网盘公共文稿目录：
 
 ```text
-/lzcapp/documents/<tenant_uid>
+/lzcapp/document
 ```
 
 启动时执行：
 
 1. 读取 `tenant_uid`。
-2. 构造固定用户根目录。
-3. 检查 `/lzcapp/documents` 下只出现当前用户允许的 UID 视图。
-4. 如果发现其他 UID 子目录，进入安全阻断状态并停止调度器。
-5. 在当前用户目录下创建产品根目录。
+2. 固定使用平台提供的当前用户网盘根目录 `/lzcapp/document`。
+3. 检查该路径已由平台挂载，避免在容器可写层中创建同名目录。
+4. 如果公共网盘根目录不可见或不可写，进入安全阻断状态并停止调度器。
+5. 在网盘根目录下创建产品根目录。
 
 ### 9.3 根目录
 
 ```text
-/lzcapp/documents/<tenant_uid>/LazycatAppBackup/
+/lzcapp/document/LazycatAppBackup/
 ```
 
 `LazycatAppBackup` 使用稳定英文目录名，界面按语言显示“懒猫应用备份”或“Lazycat App Backup”。
@@ -970,7 +986,7 @@ en-US
 - `queue/`：持久化队列、租约、重试和优先级。
 - `worker/`：有界工作池和资源预算。
 - `backup/`：扫描、数据库检测、SQLite、归档、校验和 manifest。
-- `storage/documents/`：只允许当前用户 `/lzcapp/documents/<tenant_uid>`。
+- `storage/documents/`：只允许当前用户 `/lzcapp/document`。
 - `persistence/`：控制数据库和 tenant 约束。
 - `realtime/`：按 tenant 发布 SSE。
 - `diagnostics/`：不包含文件正文和其他用户信息的诊断包。
@@ -1073,7 +1089,7 @@ SNAPSHOT_COMMIT_FAILED
 3. 用户 A 的应用 API 不返回用户 B 的实例。
 4. 用户 A 猜测用户 B 的 source deploy ID 时返回 404 或 403。
 5. 用户 A 的 SourceResolver 无法解析用户 B appvar。
-6. 用户 A 的 `/lzcapp/documents` 只出现 A 允许的 UID 目录。
+6. 用户 A 的 `/lzcapp/document` 只对应 A 当前容器的公共网盘视图。
 7. 用户 A 快照只出现在 A 的懒猫网盘。
 8. 用户 B 无法通过 URL、API、SSE 或文件路径查看 A 快照。
 9. 管理员登录自己的实例也无法看到 A、B 的备份数据。
@@ -1121,7 +1137,7 @@ SNAPSHOT_COMMIT_FAILED
 7. 用户 A 无法解析或读取用户 B 的 appvar。
 8. appvar 投影存在稳定 deploy ID 映射。
 9. appvar 投影保持只读。
-10. 多实例 `document.private` 只暴露当前用户 UID 子目录。
+10. 多实例 `document.write` 只暴露当前用户的公共文稿根目录。
 11. 备份结果出现在当前用户自己的懒猫网盘。
 12. 管理员网盘不会收到其他用户快照。
 13. 单实例目标被稳定识别并阻断。
@@ -1145,7 +1161,7 @@ SNAPSHOT_COMMIT_FAILED
 10. 普通文件可以流式写入当前用户网盘。
 11. SQLite 在应用运行时生成通过 quick check 的一致性副本。
 12. MySQL、PostgreSQL、MongoDB、Redis 和其他已知数据库被阻断。
-13. 网盘根固定为 `/lzcapp/documents/<tenant_uid>/LazycatAppBackup`。
+13. 网盘根固定为 `/lzcapp/document/LazycatAppBackup`。
 14. 页面和 API 不存在 storage UID、owner UID 和用户切换功能。
 15. 目录按 `scheduled_at → source_deploy_id → application_slug` 组织。
 16. 只有包含 `COMPLETED` 的目录进入快照库。

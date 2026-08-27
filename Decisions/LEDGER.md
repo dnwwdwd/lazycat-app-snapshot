@@ -7,4 +7,4 @@
 | DEC-20260826-002 | Confirmed for POC packaging | LPK V2 uses a registry Debian runtime with package-contained static Go/frontend artifacts; no embedded image or host path fallback | REQ-20260826-001 |
 | DEC-20260826-004 | Accepted; device validation pending | Use official runtime SDK `QueryApplication` for current-user catalog; do not guess appvar source paths | REQ-20260826-001 |
 | DEC-20260826-005 | Accepted; V1 remains gated | POC allows single-instance read/snapshot with a shared-data warning; V1 still rejects it | REQ-20260826-001 |
-| DEC-20260826-006 | Blocked pending platform contract | `appvar.other.read` needs a documented, deploy-scoped source projection/handle before platform scanning or snapshots can run | REQ-20260826-001 |
+| DEC-20260826-006 | Compatibility path implemented; A/B validation pending | LZCOS v1.6 `PERM_OTHER_APP_DATA_ADMIN` creates the fixed `/lzcapp/run/data/app/var` projection; the POC maps catalog-validated `appid` entries and enforces application-layer read-only access without host mounts or `appvar.other.write` | REQ-20260826-001 |

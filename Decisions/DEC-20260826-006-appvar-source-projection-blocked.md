@@ -1,14 +1,16 @@
 # DEC-20260826-006 — Formal `appvar.other.read` source projection is required
 
-**Status:** Blocked pending a Lazycat platform contract
+**Status:** Compatibility path implemented; A/B isolation verification pending
 **Related requirement:** REQ-20260826-001
 
 ## Decision
 
 The POC must not infer an appvar source from a host path, a deploy ID, a
-storage UID, or an undocumented runtime symlink. The scanner and snapshot
-writer may run only after a platform adapter returns a source bound to the
-already-validated tenant, application, and deploy ID.
+storage UID, or an undocumented host-side symlink. On LZCOS v1.6, the
+documented-in-device compatibility permission `PERM_OTHER_APP_DATA_ADMIN`
+creates the business-container projection `/lzcapp/run/data/app/var`. The
+scanner and snapshot writer now consume only this fixed in-container root,
+bound to the already-validated tenant, application, and deploy ID.
 
 ## Evidence
 
@@ -19,12 +21,34 @@ already-validated tenant, application, and deploy ID.
 - The current public `lzc-sdk` and `lzc-sdk-rs` protos expose
   `PackageManager.QueryApplication` and a generic `FileHandler`; neither has an
   appvar source-resolution method or a deploy-ID-to-file-handle contract.
-- On the available v1.6.0 device, the POC can query the current-user catalog,
-  but the observed `.otherAppVar` link points at a missing
-  `/lzcapp/run/data/app/var` projection. That is evidence of an unavailable
-  source, not permission to use a host-side path.
+- On the available v1.6.0 device, high-privilege applications declaring
+  `PERM_OTHER_APP_DATA_ADMIN` receive a bind-mounted
+  `/lzcapp/run/data/app/var` projection of `/lzcsys/data/appvar/`. The backup
+  package now declares that compatibility permission and uses the fixed
+  container path; it never opens the host source.
+- The device's internal `PkgmService/ResolveCallerLzcAppPath` can resolve a
+  host path when called from the host, but the business container has no
+  supported visibility into that socket or path. This internal resolver is
+  therefore diagnostic evidence only, not an application API.
 
-## Required platform contract
+## Runtime compatibility contract
+
+The package pins:
+
+```text
+BACKUP_POC_APPVAR_ROOT=/lzcapp/run/data/app/var
+BACKUP_POC_APPVAR_MODE=runtime-appvar
+BACKUP_POC_APPVAR_LAYOUT=appid
+BACKUP_POC_PROVIDER_VERSION=lzcos-runtime-appvar-v1
+```
+
+The provider maps one catalog-validated `appid` directory, verifies the
+tenant/owner pair and keeps all file operations read-only at the application
+layer. The observed compatibility mount is `rw` at the kernel level, so the
+provider reports `service-enforced`; a future kernel-read-only mount can use
+the documented provider with `ReadOnlyMode=filesystem`.
+
+## Required platform contract for future API/mount variants
 
 Lazycat must provide a documented, versioned interface that accepts the
 server-side `tenant_uid`, `appid`, `source_deploy_id`, `owner_uid`, and
@@ -42,8 +66,10 @@ and the minimum Lazycat OS/SDK versions.
 
 ## Consequence
 
-Until that contract is supplied and passes the A/B device matrix, the service
-continues to expose the catalog but reports `SOURCE_NOT_READY`; existing
-`scanSource` and `writeSnapshot` logic remains disabled for platform rows. The
-POC now routes both through a deploy-bound `resolvedSource`; local fixtures use
-the same resolver interface for coverage. No privileged fallback is allowed.
+With the compatibility permission and projection present, platform rows can
+reach `BACKUPABLE`, and scan/read/snapshot use the runtime provider. If the
+permission is not granted or an old instance has not been recreated, the
+service reports `RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE`; it never falls back
+to `/lzcsys/data/appvar` or a browser-supplied path. The two-user isolation
+matrix is still a release gate: until it passes, this is a device-validation
+POC rather than a final PASS.
