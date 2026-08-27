@@ -13,9 +13,27 @@ services:
     environment:
       - BACKUP_APP_DEPLOY_UID=${LAZYCAT_APP_DEPLOY_UID}
       - BACKUP_WEB_ROOT=/lzcapp/pkg/content/web
+      # document.write exposes the current user's public Lazycat Drive root.
+      # The service refuses to create this root if the platform mount is absent.
+      - BACKUP_DOCUMENT_ROOT=/lzcapp/document
+      # LZCOS v1.6 creates this fixed in-container projection when
+      # PERM_OTHER_APP_DATA_ADMIN is granted. No host path is inferred.
+      - BACKUP_POC_APPVAR_ROOT=/lzcapp/run/data/app/var
+      - BACKUP_POC_APPVAR_MODE=runtime-appvar
+      - BACKUP_POC_APPVAR_LAYOUT=appid
+      - BACKUP_POC_PROVIDER_VERSION=lzcos-runtime-appvar-v1
+      - BACKUP_POC_SDK_METHOD=${BACKUP_POC_SDK_METHOD}
     healthcheck:
       test_url: http://127.0.0.1:8080/api/health
       start_period: 10s
       interval: 30s
       timeout: 5s
       retries: 3
+
+# LZCOS v1.6 compatibility declaration. This permission creates the
+# cross-application appvar projection at /lzcapp/run/data/app/var inside the
+# business container. package.yml remains the user-facing permission
+# declaration and intentionally does not request appvar.other.write.
+ext_config:
+  permissions:
+    - PERM_OTHER_APP_DATA_ADMIN

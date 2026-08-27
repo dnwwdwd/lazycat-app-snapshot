@@ -24,6 +24,6 @@ locales:
 permissions:
   required:
     - appvar.other.read
-    - document.private
+    - document.write
   optional:
     - user.notify
