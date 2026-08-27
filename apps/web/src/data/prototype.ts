@@ -31,8 +31,8 @@
 };
 
 export const i18n = {
-  appName: '懒猫应用备份',
-  appSub: 'Lazycat App Backup V1',
+  appName: '咪咪应用备份',
+  appSub: 'Mimi App Backup V1',
   menu: {
     overview: '概览',
     applications: '应用实例',
@@ -155,7 +155,7 @@ export const i18n = {
     exportLogPackage: '导出脱敏诊断包'
   },
   setup: {
-    title: '懒猫应用备份 POC - 应用数据探测与手动快照',
+    title: '咪咪应用备份 POC - 应用数据探测与手动快照',
     step1: '产品能力与安全边界',
     step2: '微服系统权限检测',
     step3: '懒猫网盘目标配置',

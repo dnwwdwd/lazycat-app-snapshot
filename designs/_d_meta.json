@@ -1,0 +1,37 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "咪咪应用备份 V1 原型": {
+      "versions": [
+        {
+          "path": "index.html",
+          "createdAt": "2026-08-27T05:12:36.127Z",
+          "status": "needs-review",
+          "subtitle": "应用优先 · V14 移动端底部导航居中",
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          }
+        }
+      ]
+    },
+    "OIDC 登录页": {
+      "versions": [
+        {
+          "path": "OIDC 登录页.html",
+          "createdAt": "2026-08-27T10:19:09.384Z",
+          "status": "needs-review",
+          "subtitle": "显式授权 · 精简登录说明 · 公开图标资源",
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          }
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-08-27T05:12:36.131Z",
+  "updatedAt": "2026-08-27T13:58:08.039Z"
+}

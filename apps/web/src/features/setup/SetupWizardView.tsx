@@ -100,7 +100,7 @@ export function SetupWizardView() {
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 overflow-hidden rounded-xl"><img src="/lazycat-backup-icon.png" alt="" className="h-full w-full object-cover" /></div>
             <div>
-              <div className="flex items-center gap-2 text-sm font-bold"><span>懒猫应用备份</span><span className="rounded bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-bold tracking-wider text-amber-300">POC</span></div>
+              <div className="flex items-center gap-2 text-sm font-bold"><span>咪咪应用备份</span><span className="rounded bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-bold tracking-wider text-amber-300">POC</span></div>
               <div className="text-xs text-slate-400">选择应用 → 全量探测 appvar / 数据库 → 手动快照</div>
             </div>
           </div>

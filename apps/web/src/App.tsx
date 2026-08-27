@@ -1,5 +1,3 @@
-﻿import { SetupWizardView } from './features/setup/SetupWizardView';
+import PrototypeApp from "./prototype/PrototypeApp";
 
-export default function App() {
-  return <SetupWizardView />;
-}
+export default PrototypeApp;

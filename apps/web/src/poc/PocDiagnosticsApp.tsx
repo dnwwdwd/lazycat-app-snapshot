@@ -229,7 +229,7 @@ export function PocDiagnosticsApp() {
     <main className="min-h-screen bg-slate-50 px-4 py-8 text-slate-800 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-6xl space-y-6">
         <header className="flex flex-col gap-4 rounded-2xl bg-slate-900 p-6 text-white shadow-lg sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-3"><div className="h-12 w-12 overflow-hidden rounded-xl"><img src="/lazycat-backup-icon.png" alt="" className="h-full w-full object-cover" /></div><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300">Lazycat App Backup</p><h1 className="mt-1 text-xl font-bold">应用 appvar 读取与手动备份 POC</h1><p className="mt-1 text-sm text-slate-300">选择当前用户拥有的应用，递归查看数据并写入自己的懒猫网盘。</p></div></div>
+          <div className="flex items-start gap-3"><div className="h-12 w-12 overflow-hidden rounded-xl"><img src="/lazycat-backup-icon.png" alt="" className="h-full w-full object-cover" /></div><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300">Mimi App Backup</p><h1 className="mt-1 text-xl font-bold">应用 appvar 读取与手动备份 POC</h1><p className="mt-1 text-sm text-slate-300">选择当前用户拥有的应用，递归查看数据并写入自己的懒猫网盘。</p></div></div>
           <LoadingButton loading={identityLoading} onClick={() => void loadPage()} className="bg-white/10 hover:bg-white/20"><RefreshCw className="h-4 w-4" />刷新状态</LoadingButton>
         </header>
 

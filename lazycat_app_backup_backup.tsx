@@ -45,8 +45,8 @@ const getStorageColor = (usedGB, totalGB) => {
 };
 
 const i18n = {
-  appName: '懒猫应用备份',
-  appSub: 'Lazycat App Backup V1',
+  appName: '咪咪应用备份',
+  appSub: 'Mimi App Backup V1',
   menu: {
     overview: '概览',
     applications: '应用实例',
@@ -169,7 +169,7 @@ const i18n = {
     exportLogPackage: '导出脱敏诊断包'
   },
   setup: {
-    title: '懒猫应用备份 - 首次启动向导',
+    title: '咪咪应用备份 - 首次启动向导',
     step1: '产品能力与安全边界',
     step2: '微服系统权限检测',
     step3: '懒猫网盘目标配置',
@@ -1007,7 +1007,7 @@ export default function App() {
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              懒猫应用备份 V1 专为普通文件与标准 SQLite 3 设计。直接冷复制正在运行的服务型数据库物理文件会导致文件破坏。根据 V1 安全边界，系统严格阻止为此类实例创建无效快照。
+              咪咪应用备份 V1 专为普通文件与标准 SQLite 3 设计。直接冷复制正在运行的服务型数据库物理文件会导致文件破坏。根据 V1 安全边界，系统严格阻止为此类实例创建无效快照。
             </p>
 
             <div className="flex justify-end pt-2">
@@ -1919,7 +1919,7 @@ function SetupWizardView({ t, onComplete }) {
           <div className="space-y-4 text-xs text-slate-600">
             <h3 className="text-sm font-bold text-slate-900">{t.setup.step1}</h3>
             <p className="leading-relaxed">
-              欢迎使用懒猫应用备份 V1。本产品专为普通应用 `appvar` 数据与标准 SQLite 3 引擎设计，数据直接保存至懒猫网盘。
+              欢迎使用咪咪应用备份 V1。本产品专为普通应用 `appvar` 数据与标准 SQLite 3 引擎设计，数据直接保存至懒猫网盘。
             </p>
             <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-1 text-[11px]">
               <div className="text-emerald-700 font-semibold">✓ 支持：普通文件、附件、JSON/YAML、标准 SQLite 3</div>
