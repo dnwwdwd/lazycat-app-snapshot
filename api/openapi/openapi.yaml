@@ -1,0 +1,791 @@
+openapi: 3.1.0
+info:
+  title: Mimi App Backup V1 API
+  version: 0.1.0
+  description: Same-origin API for the current Lazycat tenant. Every business endpoint requires a valid OIDC session.
+paths:
+  /api/health:
+    get:
+      summary: Health check
+      responses:
+        '200': { description: Service is ready }
+  /auth/login:
+    get:
+      summary: Begin OIDC Authorization Code with PKCE
+      parameters:
+        - $ref: '#/components/parameters/ReturnTo'
+      responses:
+        '302': { description: Redirect to Lazycat OIDC }
+        '403': { $ref: '#/components/responses/IdentityMismatch' }
+  /auth/oidc/callback:
+    get:
+      summary: Complete OIDC login and create a server-side session
+      responses:
+        '302': { description: Redirect to the originally requested application path }
+  /auth/logout:
+    post:
+      security: [{ sessionCookie: [] }]
+      responses:
+        '204': { description: Session deleted }
+        '401': { $ref: '#/components/responses/SessionRequired' }
+  /api/session:
+    get:
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Current verified session
+          content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } }
+        '401': { $ref: '#/components/responses/SessionRequired' }
+        '403': { $ref: '#/components/responses/IdentityMismatch' }
+  /api/applications:
+    get:
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 200 }
+        - name: mode
+          in: query
+          schema: { type: string, enum: [single, multi] }
+        - name: capability_status
+          in: query
+          schema: { $ref: '#/components/schemas/CapabilityStatus' }
+        - name: protection_status
+          in: query
+          schema: { type: string, enum: [PROTECTED, UNPROTECTED] }
+      responses:
+        '200':
+          description: Persisted current-tenant application instances
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApplicationList' } } }
+        '400': { $ref: '#/components/responses/ApiError' }
+  /api/applications/sync:
+    post:
+      summary: Queue a coalesced current-tenant catalog sync
+      security: [{ sessionCookie: [] }]
+      responses:
+        '202':
+          description: Sync accepted
+          content: { application/json: { schema: { $ref: '#/components/schemas/SyncAccepted' } } }
+  /api/applications/{appid}:
+    get:
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: appid
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Logical application with its current-tenant instances
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApplicationDetail' } } }
+        '404': { $ref: '#/components/responses/ResourceNotFound' }
+  /api/instances/{deployId}:
+    get:
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DeployId'
+      responses:
+        '200':
+          description: Current-tenant application instance
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApplicationInstance' } } }
+        '404': { $ref: '#/components/responses/ResourceNotFound' }
+  /api/instances/{deployId}/probe:
+    post:
+      summary: Queue a coalesced catalog refresh containing this instance's probe
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DeployId'
+      responses:
+        '202':
+          description: Probe refresh accepted
+          content: { application/json: { schema: { $ref: '#/components/schemas/SyncAccepted' } } }
+        '404': { $ref: '#/components/responses/ResourceNotFound' }
+  /api/instances/{deployId}/backup:
+    post:
+      summary: Queue one bounded manual backup for a current-tenant instance
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DeployId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManualBackupRequest' }
+      responses:
+        '202':
+          description: Manual backup accepted
+          content: { application/json: { schema: { $ref: '#/components/schemas/ManualBackupAccepted' } } }
+        '404': { $ref: '#/components/responses/ResourceNotFound' }
+        '409': { $ref: '#/components/responses/ApiError' }
+        '429': { $ref: '#/components/responses/ApiError' }
+  /api/backup-jobs/{jobId}:
+    get:
+      summary: Read one current-tenant manual backup job
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Manual backup job status
+          content: { application/json: { schema: { $ref: '#/components/schemas/BackupJob' } } }
+        '404': { $ref: '#/components/responses/ResourceNotFound' }
+  /api/backups:
+    get:
+      summary: List recent completed current-tenant snapshots
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Snapshot records with safe relative storage metadata
+          content: { application/json: { schema: { $ref: '#/components/schemas/SnapshotList' } } }
+  /api/backups/{snapshotId}:
+    get:
+      summary: Read one current-tenant snapshot
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/SnapshotId'
+      responses:
+        '200':
+          description: Snapshot metadata
+          content: { application/json: { schema: { $ref: '#/components/schemas/Snapshot' } } }
+        '404': { $ref: '#/components/responses/ResourceNotFound' }
+    delete:
+      summary: Move one current-tenant snapshot to the backup-library trash
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/SnapshotId'
+      responses:
+        '200': { description: Snapshot moved to trash, content: { application/json: { schema: { $ref: '#/components/schemas/Snapshot' } } } }
+  /api/backups/{snapshotId}/verify:
+    post:
+      summary: Perform a fast current-tenant ZIP and manifest verification
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/SnapshotId'
+        - name: mode
+          in: query
+          schema: { type: string, enum: [quick, full], default: quick }
+      responses:
+        '200':
+          description: Verification completed
+          content: { application/json: { schema: { $ref: '#/components/schemas/Snapshot' } } }
+        '404': { $ref: '#/components/responses/ResourceNotFound' }
+        '409': { $ref: '#/components/responses/ApiError' }
+  /api/plans:
+    get:
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Current-tenant backup plans
+          content: { application/json: { schema: { $ref: '#/components/schemas/PlanList' } } }
+    post:
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/PlanInput' } } }
+      responses:
+        '201': { description: Plan created, content: { application/json: { schema: { $ref: '#/components/schemas/BackupPlan' } } } }
+        '400': { $ref: '#/components/responses/ApiError' }
+        '409': { $ref: '#/components/responses/ApiError' }
+  /api/plans/{planId}:
+    get:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/PlanId' }]
+      responses:
+        '200': { description: Current-tenant plan, content: { application/json: { schema: { $ref: '#/components/schemas/BackupPlan' } } } }
+        '404': { $ref: '#/components/responses/ResourceNotFound' }
+    put:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/PlanId' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/PlanInput' } } }
+      responses:
+        '200': { description: Plan updated, content: { application/json: { schema: { $ref: '#/components/schemas/BackupPlan' } } } }
+    delete:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/PlanId' }]
+      responses: { '204': { description: Plan deleted } }
+  /api/plans/{planId}/run:
+    post:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/PlanId' }]
+      responses:
+        '202': { description: Batch queued, content: { application/json: { schema: { $ref: '#/components/schemas/PlanRunAccepted' } } } }
+  /api/plans/{planId}/pause:
+    post:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/PlanId' }]
+      responses:
+        '200': { description: Plan paused, content: { application/json: { schema: { $ref: '#/components/schemas/BackupPlan' } } } }
+  /api/plans/{planId}/resume:
+    post:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/PlanId' }]
+      responses:
+        '200': { description: Plan resumed, content: { application/json: { schema: { $ref: '#/components/schemas/BackupPlan' } } } }
+  /api/batches:
+    get:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskLimit' }]
+      responses:
+        '200': { description: Current-tenant batches, content: { application/json: { schema: { $ref: '#/components/schemas/BatchList' } } } }
+  /api/batches/{batchId}:
+    get:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/BatchId' }]
+      responses:
+        '200': { description: Current-tenant batch, content: { application/json: { schema: { $ref: '#/components/schemas/BackupBatch' } } } }
+  /api/tasks:
+    get:
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/TaskLimit' }
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: batch_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200': { description: Current-tenant tasks, content: { application/json: { schema: { $ref: '#/components/schemas/TaskList' } } } }
+  /api/tasks/{taskId}:
+    get:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '200': { description: Task and attempts, content: { application/json: { schema: { $ref: '#/components/schemas/TaskDetail' } } } }
+  /api/tasks/{taskId}/cancel:
+    post:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '200': { description: Cancellation accepted, content: { application/json: { schema: { $ref: '#/components/schemas/BackupTask' } } } }
+  /api/tasks/{taskId}/retry:
+    post:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '202': { description: Retry queued, content: { application/json: { schema: { $ref: '#/components/schemas/BackupTask' } } } }
+  /api/backups/{snapshotId}/files:
+    get:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/SnapshotId' }]
+      responses:
+        '200': { description: ZIP file index, content: { application/json: { schema: { $ref: '#/components/schemas/SnapshotFileList' } } } }
+  /api/backups/{snapshotId}/export:
+    post:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/SnapshotId' }]
+      responses:
+        '202': { description: Export completed, content: { application/json: { schema: { $ref: '#/components/schemas/ExportAccepted' } } } }
+  /api/storage:
+    get:
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Current-tenant storage summary, content: { application/json: { schema: { $ref: '#/components/schemas/StorageSummary' } } } }
+  /api/storage/scan:
+    post:
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Library scan completed, content: { application/json: { schema: { $ref: '#/components/schemas/StorageSummary' } } } }
+  /api/storage/cleanup:
+    post:
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Expired temporary data cleanup completed, content: { application/json: { schema: { $ref: '#/components/schemas/CleanupResult' } } } }
+  /api/overview:
+    get:
+      summary: Read the current tenant operational overview
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Current-tenant overview, content: { application/json: { schema: { $ref: '#/components/schemas/Overview' } } } }
+  /api/alerts:
+    get:
+      summary: List current-tenant in-app alerts
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [OPEN, MUTED, RESOLVED, ALL] }
+        - { $ref: '#/components/parameters/TaskLimit' }
+      responses:
+        '200': { description: Current-tenant alerts, content: { application/json: { schema: { $ref: '#/components/schemas/AlertList' } } } }
+  /api/alerts/{alertId}/read:
+    post:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AlertId' }]
+      responses:
+        '200': { description: Alert marked read, content: { application/json: { schema: { $ref: '#/components/schemas/Alert' } } } }
+  /api/alerts/{alertId}/resolve:
+    post:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AlertId' }]
+      responses:
+        '200': { description: Alert resolved, content: { application/json: { schema: { $ref: '#/components/schemas/Alert' } } } }
+  /api/alerts/{alertId}/mute:
+    post:
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AlertId' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/MuteAlertRequest' } } }
+      responses:
+        '200': { description: Alert temporarily muted, content: { application/json: { schema: { $ref: '#/components/schemas/Alert' } } } }
+  /api/settings:
+    get:
+      summary: Read current-tenant safe defaults
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Current settings, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }
+    put:
+      summary: Update current-tenant safe defaults
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } }
+      responses:
+        '200': { description: Saved settings, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }
+        '400': { $ref: '#/components/responses/ApiError' }
+  /api/audit:
+    get:
+      summary: List current-tenant audit activity
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskLimit' }]
+      responses:
+        '200': { description: Current-tenant audit entries, content: { application/json: { schema: { $ref: '#/components/schemas/AuditList' } } } }
+  /api/events:
+    get:
+      summary: Receive bounded current-tenant Server-Sent Events
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: after
+          in: query
+          schema: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Current-tenant event stream. REST remains authoritative after reconnect.
+          content: { text/event-stream: { schema: { type: string } } }
+components:
+  securitySchemes:
+    sessionCookie: { type: apiKey, in: cookie, name: lazycat_backup_session }
+  parameters:
+    ReturnTo: { name: return_to, in: query, schema: { type: string } }
+    Cursor: { name: cursor, in: query, schema: { type: string } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+    DeployId: { name: deployId, in: path, required: true, schema: { type: string } }
+    JobId: { name: jobId, in: path, required: true, schema: { type: string } }
+    SnapshotId: { name: snapshotId, in: path, required: true, schema: { type: string } }
+    PlanId: { name: planId, in: path, required: true, schema: { type: string } }
+    BatchId: { name: batchId, in: path, required: true, schema: { type: string } }
+    TaskId: { name: taskId, in: path, required: true, schema: { type: string } }
+    AlertId: { name: alertId, in: path, required: true, schema: { type: string } }
+    TaskLimit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+  responses:
+    ApiError:
+      description: Safe, localizable application error
+      content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    SessionRequired: { $ref: '#/components/responses/ApiError' }
+    IdentityMismatch: { $ref: '#/components/responses/ApiError' }
+    ResourceNotFound: { $ref: '#/components/responses/ApiError' }
+  schemas:
+    Session:
+      type: object
+      required: [uid, subject, displayName, role, tenantUid, expiresAt, identityVerified]
+      properties:
+        uid: { type: string }
+        subject: { type: string }
+        displayName: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [NORMAL, ADMIN] }
+        tenantUid: { type: string }
+        expiresAt: { type: string, format: date-time }
+        identityVerified: { type: boolean }
+    CapabilityStatus:
+      type: string
+      enum: [BACKUPABLE, BACKUPABLE_SHARED_WARNING, NO_DATA, UNSUPPORTED_DATABASE, SOURCE_MAPPING_AMBIGUOUS, SOURCE_NOT_READY, SOURCE_PERMISSION_DENIED, SOURCE_INSTANCE_NOT_FOUND, SOURCE_OWNER_MISMATCH, RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE, PROBE_FAILED]
+    DatabaseFinding:
+      type: object
+      required: [type, path, supported]
+      properties:
+        type: { type: string }
+        path: { type: string, description: Source-relative path only }
+        supported: { type: boolean }
+        reason: { type: string }
+    ApplicationInstance:
+      type: object
+      required: [appid, name, deployId, multiInstance, capabilityStatus, protectionStatus, totalBytes, fileCount, sqliteCount, skippedCount, lastSyncedAt]
+      properties:
+        appid: { type: string }
+        name: { type: string }
+        version: { type: string }
+        icon: { type: string, format: uri, description: Lazycat catalog application icon URL }
+        deployId: { type: string }
+        multiInstance: { type: boolean }
+        capabilityStatus: { $ref: '#/components/schemas/CapabilityStatus' }
+        protectionStatus: { type: string, enum: [PROTECTED, UNPROTECTED] }
+        readOnlyMode: { type: string, enum: [service-enforced] }
+        totalBytes: { type: integer, format: int64 }
+        fileCount: { type: integer }
+        sqliteCount: { type: integer }
+        skippedCount: { type: integer }
+        databaseFindings: { type: array, items: { $ref: '#/components/schemas/DatabaseFinding' } }
+        lastProbedAt: { type: string, format: date-time }
+        lastSyncedAt: { type: string, format: date-time }
+        lastBackupAt: { type: string, format: date-time }
+        probeErrorCode: { type: string }
+    SyncStatus:
+      type: object
+      required: [state]
+      properties:
+        state: { type: string, enum: [IDLE, RUNNING, SUCCEEDED, FAILED] }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        errorCode: { type: string }
+    ApplicationList:
+      type: object
+      required: [items, sync]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ApplicationInstance' } }
+        nextCursor: { type: string }
+        sync: { $ref: '#/components/schemas/SyncStatus' }
+    ApplicationDetail:
+      type: object
+      required: [appid, name, instances]
+      properties:
+        appid: { type: string }
+        name: { type: string }
+        version: { type: string }
+        instances: { type: array, items: { $ref: '#/components/schemas/ApplicationInstance' } }
+    SyncAccepted:
+      type: object
+      required: [accepted, started, sync]
+      properties:
+        accepted: { type: boolean }
+        started: { type: boolean }
+        sync: { $ref: '#/components/schemas/SyncStatus' }
+    ManualBackupRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        sharedRiskAccepted:
+          type: boolean
+          description: Deprecated compatibility metadata. Shared-instance risk is displayed but does not gate backup creation.
+    BackupJob:
+      type: object
+      required: [id, appid, applicationName, deployId, multiInstance, sharedRiskAccepted, status, createdAt]
+      properties:
+        id: { type: string }
+        appid: { type: string }
+        applicationName: { type: string }
+        applicationVersion: { type: string }
+        deployId: { type: string }
+        multiInstance: { type: boolean }
+        sharedRiskAccepted: { type: boolean }
+        status: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED] }
+        errorCode: { type: string }
+        snapshotId: { type: string }
+        planId: { type: string }
+        batchId: { type: string }
+        taskId: { type: string }
+        triggerType: { type: string }
+        scheduledAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+    ManualBackupAccepted:
+      type: object
+      required: [accepted, job]
+      properties:
+        accepted: { type: boolean, const: true }
+        job: { $ref: '#/components/schemas/BackupJob' }
+    Snapshot:
+      type: object
+      required: [id, jobId, appid, applicationName, deployId, multiInstance, sharedInstanceWarning, status, storagePath, archiveName, archiveSize, archiveSha256, originalBytes, fileCount, directoryCount, sqliteCount, skippedCount, warningCount, capturedAt, finishedAt, verificationStatus]
+      properties:
+        id: { type: string }
+        jobId: { type: string }
+        appid: { type: string }
+        applicationName: { type: string }
+        applicationVersion: { type: string }
+        deployId: { type: string }
+        multiInstance: { type: boolean }
+        sharedInstanceWarning: { type: boolean }
+        status: { type: string, enum: [COMPLETED] }
+        storagePath: { type: string, description: Safe path relative to LazycatAppBackup; never an absolute source or host path. }
+        archiveName: { type: string, enum: [snapshot.zip] }
+        archiveSize: { type: integer, format: int64 }
+        archiveSha256: { type: string }
+        originalBytes: { type: integer, format: int64 }
+        fileCount: { type: integer }
+        directoryCount: { type: integer }
+        sqliteCount: { type: integer }
+        skippedCount: { type: integer }
+        warningCount: { type: integer }
+        capturedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        verificationStatus: { type: string, enum: [VERIFIED, FAILED] }
+        verifiedAt: { type: string, format: date-time }
+        planId: { type: string }
+        batchId: { type: string }
+        taskId: { type: string }
+        triggerType: { type: string }
+        retentionStatus: { type: string, enum: [ACTIVE, TRASHED] }
+        trashedAt: { type: string, format: date-time }
+    SnapshotList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Snapshot' } }
+    PlanTarget:
+      type: object
+      required: [deployId]
+      properties:
+        deployId: { type: string }
+        sharedRiskAccepted: { type: boolean, deprecated: true, description: Compatibility metadata; it does not gate plan creation. }
+    RetryPolicy:
+      type: object
+      required: [maxRetries, backoffSeconds]
+      properties:
+        maxRetries: { type: integer, minimum: 0, maximum: 8 }
+        backoffSeconds: { type: integer, minimum: 1 }
+    RetentionPolicy:
+      type: object
+      required: [keepLast, keepDaily, keepWeekly, keepMonthly, trashGraceHours]
+      properties:
+        keepLast: { type: integer, minimum: 1 }
+        keepDaily: { type: integer, minimum: 0 }
+        keepWeekly: { type: integer, minimum: 0 }
+        keepMonthly: { type: integer, minimum: 0 }
+        trashGraceHours: { type: integer, minimum: 1 }
+    PlanInput:
+      type: object
+      additionalProperties: false
+      required: [name, targetKind, targets, scheduleType, timezone, enabled, catchUp, maxCatchUpSeconds, retry, retention]
+      properties:
+        name: { type: string, maxLength: 120 }
+        targetKind: { type: string, enum: [EXPLICIT, ALL_BACKUPABLE] }
+        targets: { type: array, items: { $ref: '#/components/schemas/PlanTarget' } }
+        sharedRiskAccepted: { type: boolean, deprecated: true, description: Compatibility metadata; it does not gate plan creation. }
+        scheduleType: { type: string, enum: [MANUAL, HOURLY, DAILY, WEEKLY, CRON] }
+        cronExpression: { type: string }
+        timezone: { type: string }
+        enabled: { type: boolean }
+        catchUp: { type: boolean }
+        maxCatchUpSeconds: { type: integer, minimum: 1 }
+        retry: { $ref: '#/components/schemas/RetryPolicy' }
+        retention: { $ref: '#/components/schemas/RetentionPolicy' }
+    BackupPlan:
+      allOf:
+        - $ref: '#/components/schemas/PlanInput'
+        - type: object
+          required: [id, createdAt, updatedAt]
+          properties:
+            id: { type: string }
+            nextRunAt: { type: string, format: date-time }
+            lastScheduledAt: { type: string, format: date-time }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    PlanList:
+      type: object
+      required: [items]
+      properties: { items: { type: array, items: { $ref: '#/components/schemas/BackupPlan' } } }
+    BackupBatch:
+      type: object
+      required: [id, triggerType, status, scheduledAt, createdAt, totalTasks, succeeded, failed, skipped, running, queued]
+      properties:
+        id: { type: string }
+        planId: { type: string }
+        planName: { type: string }
+        triggerType: { type: string, enum: [manual, scheduled] }
+        status: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, SKIPPED] }
+        scheduledAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        totalTasks: { type: integer }
+        succeeded: { type: integer }
+        failed: { type: integer }
+        skipped: { type: integer }
+        running: { type: integer }
+        queued: { type: integer }
+    BatchList:
+      type: object
+      required: [items]
+      properties: { items: { type: array, items: { $ref: '#/components/schemas/BackupBatch' } } }
+    BackupTask:
+      type: object
+      required: [id, batchId, backupJobId, appid, applicationName, deployId, multiInstance, sharedRiskAccepted, triggerType, status, priority, attemptCount, maxRetries, retryBackoffSeconds, availableAt, scheduledAt, createdAt]
+      properties:
+        id: { type: string }
+        batchId: { type: string }
+        planId: { type: string }
+        backupJobId: { type: string }
+        appid: { type: string }
+        applicationName: { type: string }
+        deployId: { type: string }
+        multiInstance: { type: boolean }
+        sharedRiskAccepted: { type: boolean }
+        triggerType: { type: string }
+        status: { type: string, enum: [QUEUED, LEASED, PRECHECKING, SCANNING, SQLITE_SNAPSHOT, ZIP_WRITING, VERIFYING, COMMITTING, SUCCEEDED, SUCCEEDED_WITH_WARNINGS, FAILED, CANCELLED, TIMED_OUT, SKIPPED, INTERRUPTED] }
+        priority: { type: integer }
+        attemptCount: { type: integer }
+        maxRetries: { type: integer }
+        retryBackoffSeconds: { type: integer }
+        errorCode: { type: string }
+        availableAt: { type: string, format: date-time }
+        scheduledAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        leaseExpiresAt: { type: string, format: date-time }
+        heartbeatAt: { type: string, format: date-time }
+        snapshotId: { type: string }
+    TaskAttempt:
+      type: object
+      required: [id, taskId, attempt, status, startedAt]
+      properties:
+        id: { type: string }
+        taskId: { type: string }
+        attempt: { type: integer }
+        status: { type: string }
+        errorCode: { type: string }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+    TaskList:
+      type: object
+      required: [items]
+      properties: { items: { type: array, items: { $ref: '#/components/schemas/BackupTask' } } }
+    TaskDetail:
+      type: object
+      required: [task, attempts]
+      properties:
+        task: { $ref: '#/components/schemas/BackupTask' }
+        attempts: { type: array, items: { $ref: '#/components/schemas/TaskAttempt' } }
+    PlanRunAccepted:
+      type: object
+      required: [accepted, batch]
+      properties:
+        accepted: { type: boolean, const: true }
+        batch: { $ref: '#/components/schemas/BackupBatch' }
+    SnapshotFile:
+      type: object
+      required: [path, type, size, modified]
+      properties:
+        path: { type: string, description: ZIP-internal relative path only }
+        type: { type: string, enum: [file, sqlite] }
+        size: { type: integer, format: int64 }
+        modified: { type: string, format: date-time }
+    SnapshotFileList:
+      type: object
+      required: [items]
+      properties: { items: { type: array, items: { $ref: '#/components/schemas/SnapshotFile' } } }
+    ExportAccepted:
+      type: object
+      required: [accepted, exportPath]
+      properties:
+        accepted: { type: boolean, const: true }
+        exportPath: { type: string, description: Safe path relative to LazycatAppBackup. }
+    StorageSummary:
+      type: object
+      required: [snapshotCount, archiveBytes, availableBytes, partialCount, trashCount, missingCount]
+      properties:
+        snapshotCount: { type: integer }
+        archiveBytes: { type: integer, format: int64 }
+        availableBytes: { type: integer, format: int64 }
+        partialCount: { type: integer }
+        trashCount: { type: integer }
+        missingCount: { type: integer }
+        lastVerifiedAt: { type: string, format: date-time }
+    CleanupResult:
+      type: object
+      required: [partialRemoved, trashRemoved]
+      properties:
+        partialRemoved: { type: integer }
+        trashRemoved: { type: integer }
+    Settings:
+      type: object
+      additionalProperties: false
+      required: [locale, timezone, catchUp, maxCatchUpSeconds, retry, retention, notifyFirstFailure, notifySuccess, updatedAt]
+      properties:
+        locale: { type: string, enum: [zh-CN, en-US] }
+        timezone: { type: string }
+        catchUp: { type: boolean }
+        maxCatchUpSeconds: { type: integer, minimum: 60 }
+        retry: { $ref: '#/components/schemas/RetryPolicy' }
+        retention: { $ref: '#/components/schemas/RetentionPolicy' }
+        notifyFirstFailure: { type: boolean }
+        notifySuccess: { type: boolean }
+        updatedAt: { type: string, format: date-time, readOnly: true }
+    Alert:
+      type: object
+      required: [id, level, type, code, title, message, status, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        level: { type: string, enum: [INFO, WARNING, CRITICAL, EMERGENCY] }
+        type: { type: string }
+        code: { type: string }
+        title: { type: string }
+        message: { type: string }
+        referenceType: { type: string }
+        referenceId: { type: string }
+        status: { type: string, enum: [OPEN, MUTED, RESOLVED] }
+        readAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time }
+        mutedUntil: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AlertList:
+      type: object
+      required: [items]
+      properties: { items: { type: array, items: { $ref: '#/components/schemas/Alert' } } }
+    MuteAlertRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        minutes: { type: integer, minimum: 1, maximum: 43200, default: 60 }
+    AuditEntry:
+      type: object
+      required: [id, action, createdAt]
+      properties:
+        id: { type: string }
+        action: { type: string }
+        subject: { type: string }
+        entityType: { type: string }
+        entityId: { type: string }
+        metadata: { type: string, description: Safe operational metadata; no secret, source path, or cross-tenant field. }
+        createdAt: { type: string, format: date-time }
+    AuditList:
+      type: object
+      required: [items]
+      properties: { items: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } } }
+    Overview:
+      type: object
+      required: [applicationCount, backupableCount, protectedCount, unprotectedCount, unsupportedCount, noDataCount, queuedTasks, runningTasks, succeeded24h, failed24h, unreadAlerts, storage, nextPlans, recentActivity]
+      properties:
+        applicationCount: { type: integer }
+        backupableCount: { type: integer }
+        protectedCount: { type: integer }
+        unprotectedCount: { type: integer }
+        unsupportedCount: { type: integer }
+        noDataCount: { type: integer }
+        queuedTasks: { type: integer }
+        runningTasks: { type: integer }
+        succeeded24h: { type: integer }
+        failed24h: { type: integer }
+        unreadAlerts: { type: integer }
+        storage: { $ref: '#/components/schemas/StorageSummary' }
+        nextPlans: { type: array, items: { $ref: '#/components/schemas/BackupPlan' } }
+        recentActivity: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } }
+    ApiError:
+      type: object
+      required: [code, message, requestId]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        requestId: { type: string }
+        params: { type: object, additionalProperties: { type: string } }
