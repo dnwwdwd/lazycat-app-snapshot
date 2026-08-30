@@ -316,9 +316,21 @@ func (s *Server) backupScope(w http.ResponseWriter, r *http.Request) {
 		phase4Unavailable(w, r)
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	value, err := s.backups.ScopeCatalog(r.Context(), chi.URLParam(r, "deployID"), r.URL.Query().Get("q"), limit)
+	limit := 200
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < 1 || value > 200 {
+			errorJSON(w, r, http.StatusBadRequest, "INVALID_LIMIT", "limit 必须在 1 到 200 之间")
+			return
+		}
+		limit = value
+	}
+	value, err := s.backups.ScopeCatalog(r.Context(), chi.URLParam(r, "deployID"), r.URL.Query().Get("q"), r.URL.Query().Get("cursor"), limit)
 	if err != nil {
+		if errors.Is(err, domain.ErrInvalidCursor) {
+			errorJSON(w, r, http.StatusBadRequest, "INVALID_CURSOR", "分页游标无效")
+			return
+		}
 		phase4Error(w, r, err)
 		return
 	}
@@ -395,18 +407,22 @@ func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
 	limit := 50
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		value, err := strconv.Atoi(raw)
-		if err != nil || value < 1 || value > 100 {
-			errorJSON(w, r, http.StatusBadRequest, "INVALID_LIMIT", "limit 必须在 1 到 100 之间")
+		if err != nil || value < 1 || value > 200 {
+			errorJSON(w, r, http.StatusBadRequest, "INVALID_LIMIT", "limit 必须在 1 到 200 之间")
 			return
 		}
 		limit = value
 	}
-	items, err := s.backups.Snapshots(r.Context(), limit)
+	page, err := s.backups.SnapshotsPage(r.Context(), r.URL.Query().Get("cursor"), limit)
 	if err != nil {
+		if errors.Is(err, domain.ErrInvalidCursor) {
+			errorJSON(w, r, http.StatusBadRequest, "INVALID_CURSOR", "分页游标无效")
+			return
+		}
 		errorJSON(w, r, http.StatusInternalServerError, "BACKUP_LIST_UNAVAILABLE", "无法读取备份快照")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {

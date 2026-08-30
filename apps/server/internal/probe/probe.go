@@ -2,6 +2,8 @@ package probe
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,22 +61,28 @@ func (e *ScopeValidationError) Error() string {
 }
 
 // ScopeCatalog exposes only safe relative metadata for the range picker.
-func ScopeCatalog(ctx context.Context, resolved source.Resolved, multiInstance bool, query string, limit int) (domain.BackupScopeCatalog, error) {
+func ScopeCatalog(ctx context.Context, resolved source.Resolved, deployID string, multiInstance bool, query, cursor string, limit int) (domain.BackupScopeCatalog, error) {
+	query = strings.ToLower(strings.TrimSpace(query))
 	plan, err := BuildPlan(ctx, resolved, multiInstance)
 	if err != nil {
 		return domain.BackupScopeCatalog{}, err
 	}
-	if limit <= 0 || limit > 500 {
+	if limit <= 0 || limit > 200 {
 		limit = 200
 	}
-	query = strings.ToLower(strings.TrimSpace(query))
-	items := make([]domain.ScopeEntry, 0, limit)
+	cursorScope := scopeCursorBinding(deployID, query)
+	cursorPath, cursorType, err := decodeScopeCursor(cursor, cursorScope)
+	if err != nil {
+		return domain.BackupScopeCatalog{}, err
+	}
+	itemsByKey := map[string]domain.ScopeEntry{}
 	appendEntry := func(entry Entry, typ string, sqlite bool) {
 		if query != "" && !strings.Contains(strings.ToLower(entry.Relative), query) {
 			return
 		}
-		if len(items) < limit {
-			items = append(items, domain.ScopeEntry{Path: entry.Relative, Type: typ, Size: entry.Info.Size(), SQLite: sqlite, Selectable: true})
+		key := entry.Relative + "\x00" + typ
+		if previous, exists := itemsByKey[key]; !exists || sqlite {
+			itemsByKey[key] = domain.ScopeEntry{Path: entry.Relative, Type: typ, Size: entry.Info.Size(), SQLite: previous.SQLite || sqlite, Selectable: true}
 		}
 	}
 	for _, entry := range plan.Directories {
@@ -85,7 +94,54 @@ func ScopeCatalog(ctx context.Context, resolved source.Resolved, multiInstance b
 	for _, entry := range plan.SQLite {
 		appendEntry(entry, "file", true)
 	}
-	return domain.BackupScopeCatalog{Items: items}, nil
+	items := make([]domain.ScopeEntry, 0, len(itemsByKey))
+	for _, item := range itemsByKey {
+		if cursor != "" && (item.Path < cursorPath || (item.Path == cursorPath && item.Type <= cursorType)) {
+			continue
+		}
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Path == items[j].Path {
+			return items[i].Type < items[j].Type
+		}
+		return items[i].Path < items[j].Path
+	})
+	result := domain.BackupScopeCatalog{Items: items}
+	if len(result.Items) > limit {
+		last := result.Items[limit-1]
+		result.NextCursor = encodeScopeCursor(cursorScope, last.Path, last.Type)
+		result.Items = result.Items[:limit]
+	}
+	return result, nil
+}
+
+func scopeCursorBinding(deployID, query string) string {
+	sum := sha256.Sum256([]byte("mimi-scope-cursor-v2\x00" + deployID + "\x00" + query))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func encodeScopeCursor(scope, path, typ string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(scope + "\x00" + strconv.Quote(path) + "\x00" + typ))
+}
+
+func decodeScopeCursor(value, scope string) (string, string, error) {
+	if value == "" {
+		return "", "", nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: %v", domain.ErrInvalidCursor, err)
+	}
+	parts := strings.Split(string(decoded), "\x00")
+	if len(parts) != 3 || parts[0] != scope || (parts[2] != "directory" && parts[2] != "file") {
+		return "", "", fmt.Errorf("%w: shape", domain.ErrInvalidCursor)
+	}
+	path, err := strconv.Unquote(parts[1])
+	if err != nil || path == "" {
+		return "", "", fmt.Errorf("%w: path", domain.ErrInvalidCursor)
+	}
+	return path, parts[2], nil
 }
 
 // ApplyScope validates allow-listed paths against a fresh source scan and

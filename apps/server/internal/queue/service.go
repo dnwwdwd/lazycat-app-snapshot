@@ -255,12 +255,20 @@ func (s *Service) Batches(ctx context.Context, limit int) ([]domain.BackupBatch,
 	return s.store.Batches(ctx, s.tenantUID, limit)
 }
 
+func (s *Service) BatchesPage(ctx context.Context, cursor string, limit int) (domain.BatchPage, error) {
+	return s.store.BatchesPage(ctx, s.tenantUID, cursor, limit)
+}
+
 func (s *Service) Batch(ctx context.Context, id string) (domain.BackupBatch, error) {
 	return s.store.Batch(ctx, s.tenantUID, id)
 }
 
 func (s *Service) Tasks(ctx context.Context, filter domain.TaskFilter) ([]domain.BackupTask, error) {
 	return s.store.Tasks(ctx, s.tenantUID, filter)
+}
+
+func (s *Service) TasksPage(ctx context.Context, filter domain.TaskFilter) (domain.TaskPage, error) {
+	return s.store.TasksPage(ctx, s.tenantUID, filter)
 }
 
 func (s *Service) Task(ctx context.Context, id string) (domain.BackupTask, []domain.TaskAttempt, error) {

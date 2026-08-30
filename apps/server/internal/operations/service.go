@@ -90,6 +90,10 @@ func (s *Service) Alerts(ctx context.Context, status string, limit int) ([]domai
 	return s.store.Alerts(ctx, s.tenantUID, status, limit)
 }
 
+func (s *Service) AlertsPage(ctx context.Context, filter domain.AlertFilter) (domain.AlertPage, error) {
+	return s.store.AlertsPage(ctx, s.tenantUID, filter)
+}
+
 func (s *Service) MarkAlertRead(ctx context.Context, id, subject string) (domain.Alert, error) {
 	item, err := s.store.MarkAlertRead(ctx, s.tenantUID, id, time.Now().UTC())
 	if err != nil {
@@ -136,6 +140,10 @@ func (s *Service) CreateAlert(ctx context.Context, level, alertType, code, title
 
 func (s *Service) Audits(ctx context.Context, limit int) ([]domain.AuditEntry, error) {
 	return s.store.Audits(ctx, s.tenantUID, limit)
+}
+
+func (s *Service) AuditsPage(ctx context.Context, cursor string, limit int) (domain.AuditPage, error) {
+	return s.store.AuditsPage(ctx, s.tenantUID, cursor, limit)
 }
 
 func (s *Service) Record(ctx context.Context, action, subject, entityType, entityID string, metadata any) error {

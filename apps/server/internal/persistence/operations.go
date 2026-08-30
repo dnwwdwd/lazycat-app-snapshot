@@ -71,32 +71,58 @@ func (s *Store) CreateAlert(ctx context.Context, value domain.Alert) error {
 }
 
 func (s *Store) Alerts(ctx context.Context, tenant, status string, limit int) ([]domain.Alert, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 50
+	page, err := s.AlertsPage(ctx, tenant, domain.AlertFilter{Status: status, Limit: limit})
+	return page.Items, err
+}
+
+func (s *Store) AlertsPage(ctx context.Context, tenant string, filter domain.AlertFilter) (domain.AlertPage, error) {
+	if filter.Limit <= 0 || filter.Limit > 200 {
+		filter.Limit = 50
+	}
+	status := filter.Status
+	if status == "ALL" {
+		status = ""
+	}
+	cursorScope := scopedCursor("alerts", tenant, status)
+	createdAt, id, err := decodeTimeCursor(filter.Cursor, cursorScope)
+	if err != nil {
+		return domain.AlertPage{}, err
 	}
 	query := `SELECT id, tenant_uid, level, type, code, title, message, reference_type, reference_id, status,
 		read_at, resolved_at, muted_until, created_at, updated_at FROM alerts WHERE tenant_uid=?`
 	args := []any{tenant}
-	if status != "" && status != "ALL" {
+	if status != "" {
 		query += " AND status=?"
 		args = append(args, status)
 	}
+	if filter.Cursor != "" {
+		query += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+		args = append(args, createdAt, createdAt, id)
+	}
 	query += " ORDER BY created_at DESC, id DESC LIMIT ?"
-	args = append(args, limit)
+	args = append(args, filter.Limit+1)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return domain.AlertPage{}, err
 	}
 	defer rows.Close()
-	items := []domain.Alert{}
+	result := domain.AlertPage{Items: make([]domain.Alert, 0, filter.Limit)}
 	for rows.Next() {
 		item, err := scanAlert(rows)
 		if err != nil {
-			return nil, err
+			return domain.AlertPage{}, err
 		}
-		items = append(items, item)
+		result.Items = append(result.Items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return domain.AlertPage{}, err
+	}
+	if len(result.Items) > filter.Limit {
+		last := result.Items[filter.Limit-1]
+		result.NextCursor = encodeTimeCursor(cursorScope, last.CreatedAt.Unix(), last.ID)
+		result.Items = result.Items[:filter.Limit]
+	}
+	return result, nil
 }
 
 func (s *Store) Alert(ctx context.Context, tenant, id string) (domain.Alert, error) {
@@ -157,26 +183,52 @@ func (s *Store) AppendAudit(ctx context.Context, value domain.AuditEntry) error 
 }
 
 func (s *Store) Audits(ctx context.Context, tenant string, limit int) ([]domain.AuditEntry, error) {
+	page, err := s.AuditsPage(ctx, tenant, "", limit)
+	return page.Items, err
+}
+
+func (s *Store) AuditsPage(ctx context.Context, tenant, cursor string, limit int) (domain.AuditPage, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_uid, action, subject, entity_type, entity_id, metadata, created_at
-		FROM audit_entries WHERE tenant_uid=? ORDER BY created_at DESC, id DESC LIMIT ?`, tenant, limit)
+	cursorScope := scopedCursor("audit", tenant)
+	createdAt, id, err := decodeTimeCursor(cursor, cursorScope)
 	if err != nil {
-		return nil, err
+		return domain.AuditPage{}, err
+	}
+	query := `SELECT id, tenant_uid, action, subject, entity_type, entity_id, metadata, created_at
+		FROM audit_entries WHERE tenant_uid=?`
+	args := []any{tenant}
+	if cursor != "" {
+		query += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+		args = append(args, createdAt, createdAt, id)
+	}
+	query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return domain.AuditPage{}, err
 	}
 	defer rows.Close()
-	items := []domain.AuditEntry{}
+	result := domain.AuditPage{Items: make([]domain.AuditEntry, 0, limit)}
 	for rows.Next() {
 		var item domain.AuditEntry
 		var created int64
 		if err := rows.Scan(&item.ID, &item.TenantUID, &item.Action, &item.Subject, &item.EntityType, &item.EntityID, &item.Metadata, &created); err != nil {
-			return nil, err
+			return domain.AuditPage{}, err
 		}
 		item.CreatedAt = time.Unix(created, 0).UTC()
-		items = append(items, item)
+		result.Items = append(result.Items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return domain.AuditPage{}, err
+	}
+	if len(result.Items) > limit {
+		last := result.Items[limit-1]
+		result.NextCursor = encodeTimeCursor(cursorScope, last.CreatedAt.Unix(), last.ID)
+		result.Items = result.Items[:limit]
+	}
+	return result, nil
 }
 
 func (s *Store) AppendEvent(ctx context.Context, tenant, eventType, data string, now time.Time) (domain.Event, error) {

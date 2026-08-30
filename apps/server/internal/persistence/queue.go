@@ -298,23 +298,49 @@ func (s *Store) AddTask(ctx context.Context, task domain.BackupTask) error {
 }
 
 func (s *Store) Batches(ctx context.Context, tenant string, limit int) ([]domain.BackupBatch, error) {
-	if limit <= 0 || limit > 100 {
+	page, err := s.BatchesPage(ctx, tenant, "", limit)
+	return page.Items, err
+}
+
+func (s *Store) BatchesPage(ctx context.Context, tenant, cursor string, limit int) (domain.BatchPage, error) {
+	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_uid, plan_id, plan_name, trigger_type, status, scheduled_at, created_at, started_at, finished_at, total_tasks, succeeded_count, failed_count, skipped_count, running_count, queued_count FROM backup_batches WHERE tenant_uid=? ORDER BY scheduled_at DESC, id DESC LIMIT ?`, tenant, limit)
+	cursorScope := scopedCursor("batches", tenant)
+	createdAt, id, err := decodeTimeCursor(cursor, cursorScope)
 	if err != nil {
-		return nil, err
+		return domain.BatchPage{}, err
+	}
+	query := `SELECT id, tenant_uid, plan_id, plan_name, trigger_type, status, scheduled_at, created_at, started_at, finished_at, total_tasks, succeeded_count, failed_count, skipped_count, running_count, queued_count FROM backup_batches WHERE tenant_uid=?`
+	args := []any{tenant}
+	if cursor != "" {
+		query += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+		args = append(args, createdAt, createdAt, id)
+	}
+	query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return domain.BatchPage{}, err
 	}
 	defer rows.Close()
-	items := []domain.BackupBatch{}
+	result := domain.BatchPage{Items: make([]domain.BackupBatch, 0, limit)}
 	for rows.Next() {
 		item, err := scanBatch(rows)
 		if err != nil {
-			return nil, err
+			return domain.BatchPage{}, err
 		}
-		items = append(items, item)
+		result.Items = append(result.Items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return domain.BatchPage{}, err
+	}
+	if len(result.Items) > limit {
+		last := result.Items[limit-1]
+		result.NextCursor = encodeTimeCursor(cursorScope, last.CreatedAt.Unix(), last.ID)
+		result.Items = result.Items[:limit]
+	}
+	return result, nil
 }
 
 func (s *Store) Batch(ctx context.Context, tenant, id string) (domain.BackupBatch, error) {
@@ -323,8 +349,18 @@ func (s *Store) Batch(ctx context.Context, tenant, id string) (domain.BackupBatc
 }
 
 func (s *Store) Tasks(ctx context.Context, tenant string, filter domain.TaskFilter) ([]domain.BackupTask, error) {
+	page, err := s.TasksPage(ctx, tenant, filter)
+	return page.Items, err
+}
+
+func (s *Store) TasksPage(ctx context.Context, tenant string, filter domain.TaskFilter) (domain.TaskPage, error) {
 	if filter.Limit <= 0 || filter.Limit > 200 {
 		filter.Limit = 50
+	}
+	cursorScope := scopedCursor("tasks", tenant, filter.Status, filter.BatchID, filter.DeployID)
+	createdAt, id, err := decodeTimeCursor(filter.Cursor, cursorScope)
+	if err != nil {
+		return domain.TaskPage{}, err
 	}
 	conditions, args := []string{"tenant_uid=?"}, []any{tenant}
 	if filter.Status != "" {
@@ -333,21 +369,36 @@ func (s *Store) Tasks(ctx context.Context, tenant string, filter domain.TaskFilt
 	if filter.BatchID != "" {
 		conditions, args = append(conditions, "batch_id=?"), append(args, filter.BatchID)
 	}
-	args = append(args, filter.Limit)
+	if filter.DeployID != "" {
+		conditions, args = append(conditions, "deploy_id=?"), append(args, filter.DeployID)
+	}
+	if filter.Cursor != "" {
+		conditions = append(conditions, "(created_at < ? OR (created_at = ? AND id < ?))")
+		args = append(args, createdAt, createdAt, id)
+	}
+	args = append(args, filter.Limit+1)
 	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_uid, batch_id, plan_id, backup_job_id, appid, application_name, deploy_id, multi_instance, shared_risk_accepted, trigger_type, status, priority, attempt_count, max_retries, retry_backoff_seconds, error_code, available_at, scheduled_at, created_at, started_at, finished_at, lease_expires_at, heartbeat_at, snapshot_id, scope_json, scope_validation_json FROM backup_tasks WHERE `+strings.Join(conditions, " AND ")+` ORDER BY created_at DESC, id DESC LIMIT ?`, args...)
 	if err != nil {
-		return nil, err
+		return domain.TaskPage{}, err
 	}
 	defer rows.Close()
-	items := []domain.BackupTask{}
+	result := domain.TaskPage{Items: make([]domain.BackupTask, 0, filter.Limit)}
 	for rows.Next() {
 		item, err := scanTask(rows)
 		if err != nil {
-			return nil, err
+			return domain.TaskPage{}, err
 		}
-		items = append(items, item)
+		result.Items = append(result.Items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return domain.TaskPage{}, err
+	}
+	if len(result.Items) > filter.Limit {
+		last := result.Items[filter.Limit-1]
+		result.NextCursor = encodeTimeCursor(cursorScope, last.CreatedAt.Unix(), last.ID)
+		result.Items = result.Items[:filter.Limit]
+	}
+	return result, nil
 }
 
 func (s *Store) Task(ctx context.Context, tenant, id string) (domain.BackupTask, error) {

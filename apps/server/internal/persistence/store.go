@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -235,6 +236,17 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE snapshots ADD COLUMN scope_json TEXT NOT NULL DEFAULT '{"mode":"FULL","revision":1}'`,
 	}}, {version: 15, statements: []string{
 		`ALTER TABLE backup_tasks ADD COLUMN scope_validation_json TEXT NOT NULL DEFAULT ''`,
+	}}, {version: 16, statements: []string{
+		`CREATE INDEX snapshots_tenant_active_finished_id_idx ON snapshots(tenant_uid, retention_status, finished_at DESC, id DESC)`,
+		`CREATE INDEX batches_tenant_created_id_idx ON backup_batches(tenant_uid, created_at DESC, id DESC)`,
+		`CREATE INDEX tasks_tenant_created_id_idx ON backup_tasks(tenant_uid, created_at DESC, id DESC)`,
+		`CREATE INDEX tasks_tenant_status_created_id_idx ON backup_tasks(tenant_uid, status, created_at DESC, id DESC)`,
+		`CREATE INDEX tasks_tenant_batch_created_id_idx ON backup_tasks(tenant_uid, batch_id, created_at DESC, id DESC)`,
+		`CREATE INDEX alerts_tenant_created_id_idx ON alerts(tenant_uid, created_at DESC, id DESC)`,
+		`CREATE INDEX alerts_tenant_status_created_id_idx ON alerts(tenant_uid, status, created_at DESC, id DESC)`,
+		`CREATE INDEX audit_entries_tenant_created_id_idx ON audit_entries(tenant_uid, created_at DESC, id DESC)`,
+	}}, {version: 17, statements: []string{
+		`CREATE INDEX tasks_tenant_deploy_created_id_idx ON backup_tasks(tenant_uid, deploy_id, created_at DESC, id DESC)`,
 	}}}
 	for _, migration := range migrations {
 		var applied int
@@ -449,9 +461,10 @@ func (s *Store) ListInstances(ctx context.Context, tenant string, filter domain.
 		(SELECT MAX(s.captured_at) FROM snapshots s WHERE s.tenant_uid=i.tenant_uid AND s.deploy_id=i.deploy_id AND s.status='COMPLETED')
 		FROM application_instances i JOIN applications a ON a.tenant_uid=i.tenant_uid AND a.appid=i.appid WHERE i.tenant_uid=? AND i.active=1`
 	args := []any{tenant}
-	if q := strings.TrimSpace(strings.ToLower(filter.Query)); q != "" {
+	queryText := strings.TrimSpace(strings.ToLower(filter.Query))
+	if queryText != "" {
 		query += " AND (a.name_sort LIKE ? OR lower(a.appid) LIKE ? OR lower(i.deploy_id) LIKE ?)"
-		pattern := "%" + q + "%"
+		pattern := "%" + queryText + "%"
 		args = append(args, pattern, pattern, pattern)
 	}
 	if filter.Mode == "single" {
@@ -474,7 +487,8 @@ func (s *Store) ListInstances(ctx context.Context, tenant string, filter domain.
 	if filter.ProtectionStatus == "UNPROTECTED" {
 		query += " AND NOT EXISTS (SELECT 1 FROM snapshots s WHERE s.tenant_uid=i.tenant_uid AND s.deploy_id=i.deploy_id AND s.status='COMPLETED')"
 	}
-	name, appid, deploy, err := decodeCursor(filter.Cursor)
+	cursorScope := scopedCursor("applications", tenant, queryText, filter.Mode, filter.CapabilityStatus, filter.ProtectionStatus)
+	name, appid, deploy, err := decodeCursor(filter.Cursor, cursorScope)
 	if err != nil {
 		return domain.ApplicationPage{}, fmt.Errorf("invalid cursor: %w", err)
 	}
@@ -499,6 +513,11 @@ func (s *Store) ListInstances(ctx context.Context, tenant string, filter domain.
 		if instance.LastBackupAt != nil {
 			instance.ProtectionStatus = "PROTECTED"
 		}
+		findings, err := s.findings(ctx, tenant, instance.AppID, instance.DeployID)
+		if err != nil {
+			return result, err
+		}
+		instance.DatabaseFindings = findings
 		result.Items = append(result.Items, instance)
 	}
 	if err := rows.Err(); err != nil {
@@ -506,7 +525,7 @@ func (s *Store) ListInstances(ctx context.Context, tenant string, filter domain.
 	}
 	if len(result.Items) > filter.Limit {
 		last := result.Items[filter.Limit-1]
-		result.NextCursor = encodeCursor(strings.ToLower(last.Name), last.AppID, last.DeployID)
+		result.NextCursor = encodeCursor(cursorScope, strings.ToLower(last.Name), last.AppID, last.DeployID)
 		result.Items = result.Items[:filter.Limit]
 	}
 	return result, nil
@@ -708,24 +727,50 @@ func (s *Store) CommitSnapshot(ctx context.Context, snapshot domain.Snapshot) er
 }
 
 func (s *Store) ListSnapshots(ctx context.Context, tenant string, limit int) ([]domain.Snapshot, error) {
-	if limit <= 0 || limit > 100 {
+	page, err := s.ListSnapshotsPage(ctx, tenant, "", limit)
+	return page.Items, err
+}
+
+func (s *Store) ListSnapshotsPage(ctx context.Context, tenant, cursor string, limit int) (domain.SnapshotPage, error) {
+	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_uid, job_id, appid, application_name, application_version, deploy_id, multi_instance, shared_instance_warning, status, storage_path, archive_name, archive_size, archive_sha256, original_bytes, file_count, directory_count, sqlite_count, skipped_count, warning_count, captured_at, finished_at, verification_status, verified_at, plan_id, batch_id, task_id, trigger_type, retention_status, trashed_at, scope_json
-		FROM snapshots WHERE tenant_uid=? AND retention_status <> 'TRASHED' ORDER BY captured_at DESC, id DESC LIMIT ?`, tenant, limit)
+	cursorScope := scopedCursor("snapshots", tenant)
+	finishedAt, id, err := decodeTimeCursor(cursor, cursorScope)
 	if err != nil {
-		return nil, err
+		return domain.SnapshotPage{}, err
+	}
+	query := `SELECT id, tenant_uid, job_id, appid, application_name, application_version, deploy_id, multi_instance, shared_instance_warning, status, storage_path, archive_name, archive_size, archive_sha256, original_bytes, file_count, directory_count, sqlite_count, skipped_count, warning_count, captured_at, finished_at, verification_status, verified_at, plan_id, batch_id, task_id, trigger_type, retention_status, trashed_at, scope_json
+		FROM snapshots WHERE tenant_uid=? AND retention_status <> 'TRASHED'`
+	args := []any{tenant}
+	if cursor != "" {
+		query += " AND (finished_at < ? OR (finished_at = ? AND id < ?))"
+		args = append(args, finishedAt, finishedAt, id)
+	}
+	query += " ORDER BY finished_at DESC, id DESC LIMIT ?"
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return domain.SnapshotPage{}, err
 	}
 	defer rows.Close()
-	result := []domain.Snapshot{}
+	result := domain.SnapshotPage{Items: make([]domain.Snapshot, 0, limit)}
 	for rows.Next() {
 		item, err := scanSnapshot(rows)
 		if err != nil {
-			return nil, err
+			return domain.SnapshotPage{}, err
 		}
-		result = append(result, item)
+		result.Items = append(result.Items, item)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return domain.SnapshotPage{}, err
+	}
+	if len(result.Items) > limit {
+		last := result.Items[limit-1]
+		result.NextCursor = encodeTimeCursor(cursorScope, last.FinishedAt.Unix(), last.ID)
+		result.Items = result.Items[:limit]
+	}
+	return result, nil
 }
 
 func (s *Store) Snapshot(ctx context.Context, tenant, id string) (domain.Snapshot, error) {
@@ -826,20 +871,54 @@ func scanInstance(row scanner) (domain.ApplicationInstance, error) {
 	return instance, nil
 }
 
-func encodeCursor(values ...string) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(strings.Join(values, "\x00")))
+func scopedCursor(parts ...string) string {
+	value := sha256.New()
+	_, _ = value.Write([]byte("mimi-cursor-v2"))
+	for _, part := range parts {
+		_, _ = value.Write([]byte{'\x00'})
+		_, _ = value.Write([]byte(part))
+	}
+	return base64.RawURLEncoding.EncodeToString(value.Sum(nil))
 }
-func decodeCursor(value string) (string, string, string, error) {
+
+func encodeCursor(scope string, values ...string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strings.Join(append([]string{scope}, values...), "\x00")))
+}
+
+func decodeCursor(value, scope string) (string, string, string, error) {
 	if value == "" {
 		return "", "", "", nil
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", fmt.Errorf("%w: %v", domain.ErrInvalidCursor, err)
 	}
 	parts := strings.Split(string(decoded), "\x00")
-	if len(parts) != 3 {
-		return "", "", "", errors.New("cursor shape")
+	if len(parts) != 4 || parts[0] != scope {
+		return "", "", "", fmt.Errorf("%w: scope", domain.ErrInvalidCursor)
 	}
-	return parts[0], parts[1], parts[2], nil
+	return parts[1], parts[2], parts[3], nil
+}
+
+func encodeTimeCursor(scope string, timestamp int64, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(scope + "\x00" + strconv.FormatInt(timestamp, 10) + "\x00" + id))
+}
+
+func decodeTimeCursor(value, scope string) (int64, string, error) {
+	if value == "" {
+		return 0, "", nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return 0, "", fmt.Errorf("%w: %v", domain.ErrInvalidCursor, err)
+	}
+	parts := strings.Split(string(decoded), "\x00")
+	if len(parts) != 3 || parts[0] != scope || parts[2] == "" {
+		return 0, "", fmt.Errorf("%w: shape", domain.ErrInvalidCursor)
+	}
+	timestamp, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return 0, "", fmt.Errorf("%w: timestamp", domain.ErrInvalidCursor)
+	}
+	return timestamp, parts[2], nil
 }

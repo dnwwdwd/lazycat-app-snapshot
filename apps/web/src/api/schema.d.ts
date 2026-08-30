@@ -385,6 +385,7 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
+                    cursor?: components["parameters"]["Cursor"];
                     q?: string;
                     limit?: components["parameters"]["Limit"];
                 };
@@ -511,7 +512,8 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    limit?: number;
+                    cursor?: components["parameters"]["Cursor"];
+                    limit?: components["parameters"]["Limit"];
                 };
                 header?: never;
                 path?: never;
@@ -863,7 +865,8 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    limit?: components["parameters"]["TaskLimit"];
+                    cursor?: components["parameters"]["Cursor"];
+                    limit?: components["parameters"]["Limit"];
                 };
                 header?: never;
                 path?: never;
@@ -937,9 +940,11 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    limit?: components["parameters"]["TaskLimit"];
+                    cursor?: components["parameters"]["Cursor"];
+                    limit?: components["parameters"]["Limit"];
                     status?: string;
                     batch_id?: string;
+                    deploy_id?: string;
                 };
                 header?: never;
                 path?: never;
@@ -1269,7 +1274,8 @@ export interface paths {
             parameters: {
                 query?: {
                     status?: "OPEN" | "MUTED" | "RESOLVED" | "ALL";
-                    limit?: components["parameters"]["TaskLimit"];
+                    cursor?: components["parameters"]["Cursor"];
+                    limit?: components["parameters"]["Limit"];
                 };
                 header?: never;
                 path?: never;
@@ -1483,7 +1489,8 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    limit?: components["parameters"]["TaskLimit"];
+                    cursor?: components["parameters"]["Cursor"];
+                    limit?: components["parameters"]["Limit"];
                 };
                 header?: never;
                 path?: never;
@@ -1713,6 +1720,7 @@ export interface components {
         };
         SnapshotList: {
             items: components["schemas"]["Snapshot"][];
+            nextCursor?: string;
         };
         PlanTarget: {
             deployId: string;
@@ -1752,6 +1760,7 @@ export interface components {
         };
         BackupScopeCatalog: {
             items: components["schemas"]["ScopeEntry"][];
+            nextCursor?: string;
         };
         RetryPolicy: {
             maxRetries: number;
@@ -1829,6 +1838,7 @@ export interface components {
         };
         BatchList: {
             items: components["schemas"]["BackupBatch"][];
+            nextCursor?: string;
         };
         BackupTask: {
             id: string;
@@ -1879,6 +1889,7 @@ export interface components {
         };
         TaskList: {
             items: components["schemas"]["BackupTask"][];
+            nextCursor?: string;
         };
         TaskDetail: {
             task: components["schemas"]["BackupTask"];
@@ -1957,6 +1968,7 @@ export interface components {
         };
         AlertList: {
             items: components["schemas"]["Alert"][];
+            nextCursor?: string;
         };
         MuteAlertRequest: {
             /** @default 60 */
@@ -1975,6 +1987,7 @@ export interface components {
         };
         AuditList: {
             items: components["schemas"]["AuditEntry"][];
+            nextCursor?: string;
         };
         Overview: {
             applicationCount: number;

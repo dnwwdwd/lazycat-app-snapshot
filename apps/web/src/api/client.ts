@@ -105,6 +105,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+function withQuery(path: string, params?: URLSearchParams) {
+	return params && params.size ? `${path}?${params.toString()}` : path;
+}
+
 export const api = {
   session: () => request<Session>("/api/session"),
   applications: (params: URLSearchParams = new URLSearchParams()) =>
@@ -115,8 +119,8 @@ export const api = {
     ),
   instance: (deployId: string) =>
     request<ApplicationInstance>(`/api/instances/${encodeURIComponent(deployId)}`),
-  backupScope: (deployId: string, query = "") =>
-    request<BackupScopeCatalog>(`/api/instances/${encodeURIComponent(deployId)}/backup-scope${query ? `?q=${encodeURIComponent(query)}` : ""}`),
+  backupScope: (deployId: string, params: URLSearchParams = new URLSearchParams()) =>
+    request<BackupScopeCatalog>(withQuery(`/api/instances/${encodeURIComponent(deployId)}/backup-scope`, params)),
   syncApplications: () =>
     request<SyncAccepted>("/api/applications/sync", { method: "POST" }),
   probeInstance: (deployId: string) =>
@@ -133,8 +137,8 @@ export const api = {
     ),
   backupJob: (jobId: string) =>
     request<BackupJob>(`/api/backup-jobs/${encodeURIComponent(jobId)}`),
-  backups: (limit = 50) =>
-    request<SnapshotList>(`/api/backups?limit=${encodeURIComponent(limit)}`),
+  backups: (params: URLSearchParams = new URLSearchParams()) =>
+    request<SnapshotList>(withQuery("/api/backups", params)),
   backup: (snapshotId: string) =>
     request<Snapshot>(`/api/backups/${encodeURIComponent(snapshotId)}`),
   verifyBackup: (snapshotId: string) =>
@@ -152,22 +156,22 @@ export const api = {
   runPlan: (planId: string) => request<{ accepted: true; batch: BackupBatch }>(`/api/plans/${encodeURIComponent(planId)}/run`, { method: "POST" }),
   pausePlan: (planId: string) => request<BackupPlan>(`/api/plans/${encodeURIComponent(planId)}/pause`, { method: "POST" }),
   resumePlan: (planId: string) => request<BackupPlan>(`/api/plans/${encodeURIComponent(planId)}/resume`, { method: "POST" }),
-  batches: (limit = 50) => request<BatchList>(`/api/batches?limit=${encodeURIComponent(limit)}`),
+  batches: (params: URLSearchParams = new URLSearchParams()) => request<BatchList>(withQuery("/api/batches", params)),
   batch: (batchId: string) => request<BackupBatch>(`/api/batches/${encodeURIComponent(batchId)}`),
-  tasks: (params: URLSearchParams = new URLSearchParams()) => request<TaskList>(`/api/tasks${params.size ? `?${params}` : ""}`),
+  tasks: (params: URLSearchParams = new URLSearchParams()) => request<TaskList>(withQuery("/api/tasks", params)),
   task: (taskId: string) => request<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}`),
   cancelTask: (taskId: string) => request<BackupTask>(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" }),
   retryTask: (taskId: string) => request<BackupTask>(`/api/tasks/${encodeURIComponent(taskId)}/retry`, { method: "POST" }),
   storage: () => request<StorageSummary>("/api/storage"),
   scanStorage: () => request<StorageSummary>("/api/storage/scan", { method: "POST" }),
   overview: () => request<Overview>("/api/overview"),
-  alerts: (params: URLSearchParams = new URLSearchParams()) => request<AlertList>(`/api/alerts${params.size ? `?${params}` : ""}`),
+  alerts: (params: URLSearchParams = new URLSearchParams()) => request<AlertList>(withQuery("/api/alerts", params)),
   readAlert: (alertId: string) => request<Alert>(`/api/alerts/${encodeURIComponent(alertId)}/read`, { method: "POST" }),
   resolveAlert: (alertId: string) => request<Alert>(`/api/alerts/${encodeURIComponent(alertId)}/resolve`, { method: "POST" }),
   muteAlert: (alertId: string, minutes = 60) => request<Alert>(`/api/alerts/${encodeURIComponent(alertId)}/mute`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ minutes }) }),
   settings: () => request<Settings>("/api/settings"),
   updateSettings: (value: Settings) => request<Settings>("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) }),
-  audit: (limit = 50) => request<AuditList>(`/api/audit?limit=${encodeURIComponent(limit)}`),
+  audit: (params: URLSearchParams = new URLSearchParams()) => request<AuditList>(withQuery("/api/audit", params)),
   eventsURL: () => "/api/events",
   logout: () => request<void>("/auth/logout", { method: "POST" }),
 };

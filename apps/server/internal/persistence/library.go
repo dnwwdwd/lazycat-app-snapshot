@@ -87,7 +87,7 @@ func (s *Store) DeleteTrashedBefore(ctx context.Context, tenant string, before t
 func (s *Store) SnapshotSummary(ctx context.Context, tenant string) (count int, bytes int64, missing int, verifiedAt *time.Time, err error) {
 	var last sql.NullInt64
 	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(archive_size), 0),
-		SUM(CASE WHEN verification_status='FAILED' THEN 1 ELSE 0 END), MAX(verified_at)
+		COALESCE(SUM(CASE WHEN verification_status='FAILED' THEN 1 ELSE 0 END), 0), MAX(verified_at)
 		FROM snapshots WHERE tenant_uid=? AND retention_status='ACTIVE'`, tenant).Scan(&count, &bytes, &missing, &last)
 	if err != nil {
 		return 0, 0, 0, nil, err

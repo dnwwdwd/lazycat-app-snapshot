@@ -6,8 +6,9 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("record not found")
-	ErrConflict = errors.New("conflicting record")
+	ErrNotFound      = errors.New("record not found")
+	ErrConflict      = errors.New("conflicting record")
+	ErrInvalidCursor = errors.New("invalid cursor")
 )
 
 type Role string
@@ -149,6 +150,11 @@ type Snapshot struct {
 	RetentionStatus       string      `json:"retentionStatus"`
 	Scope                 BackupScope `json:"scope"`
 	TrashedAt             *time.Time  `json:"trashedAt,omitempty"`
+}
+
+type SnapshotPage struct {
+	Items      []Snapshot `json:"items"`
+	NextCursor string     `json:"nextCursor,omitempty"`
 }
 
 type RetentionPolicy struct {
@@ -302,9 +308,21 @@ type TaskAttempt struct {
 }
 
 type TaskFilter struct {
-	Limit   int
-	Status  string
-	BatchID string
+	Limit    int
+	Cursor   string
+	Status   string
+	BatchID  string
+	DeployID string
+}
+
+type BatchPage struct {
+	Items      []BackupBatch `json:"items"`
+	NextCursor string        `json:"nextCursor,omitempty"`
+}
+
+type TaskPage struct {
+	Items      []BackupTask `json:"items"`
+	NextCursor string       `json:"nextCursor,omitempty"`
 }
 
 type SnapshotFile struct {
@@ -357,6 +375,17 @@ type Alert struct {
 	UpdatedAt     time.Time  `json:"updatedAt"`
 }
 
+type AlertFilter struct {
+	Cursor string
+	Limit  int
+	Status string
+}
+
+type AlertPage struct {
+	Items      []Alert `json:"items"`
+	NextCursor string  `json:"nextCursor,omitempty"`
+}
+
 type AuditEntry struct {
 	ID         string    `json:"id"`
 	TenantUID  string    `json:"-"`
@@ -366,6 +395,11 @@ type AuditEntry struct {
 	EntityID   string    `json:"entityId,omitempty"`
 	Metadata   string    `json:"metadata,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
+}
+
+type AuditPage struct {
+	Items      []AuditEntry `json:"items"`
+	NextCursor string       `json:"nextCursor,omitempty"`
 }
 
 type Event struct {

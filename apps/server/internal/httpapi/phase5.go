@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -47,12 +48,12 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := s.operations.Alerts(r.Context(), status, limit)
+	page, err := s.operations.AlertsPage(r.Context(), domain.AlertFilter{Cursor: r.URL.Query().Get("cursor"), Limit: limit, Status: status})
 	if err != nil {
 		phase5Error(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (s *Server) readAlert(w http.ResponseWriter, r *http.Request) {
@@ -159,12 +160,12 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := s.operations.Audits(r.Context(), limit)
+	page, err := s.operations.AuditsPage(r.Context(), r.URL.Query().Get("cursor"), limit)
 	if err != nil {
 		phase5Error(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, page)
 }
 
 // events writes a bounded event stream. SQLite remains the source of truth;
@@ -229,6 +230,10 @@ func phase5Unavailable(w http.ResponseWriter, r *http.Request) {
 }
 
 func phase5Error(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, domain.ErrInvalidCursor) {
+		errorJSON(w, r, http.StatusBadRequest, "INVALID_CURSOR", "分页游标无效")
+		return
+	}
 	if errors.Is(err, domain.ErrNotFound) {
 		errorJSON(w, r, http.StatusNotFound, "RESOURCE_NOT_FOUND", "资源不存在")
 		return
@@ -238,6 +243,7 @@ func phase5Error(w http.ResponseWriter, r *http.Request, err error) {
 		errorJSON(w, r, http.StatusBadRequest, validation.Code, "设置或告警操作无效")
 		return
 	}
+	slog.Error("phase5 operation failed", "request_id", requestIDFrom(r.Context()), "error", err)
 	errorJSON(w, r, http.StatusInternalServerError, "PHASE5_OPERATION_FAILED", "操作未完成")
 }
 

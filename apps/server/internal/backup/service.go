@@ -183,7 +183,7 @@ func (s *Service) Job(ctx context.Context, id string) (domain.BackupJob, error) 
 
 // ScopeCatalog derives picker metadata from the same server-side resolver used
 // by the archive engine. It never exposes a source absolute path.
-func (s *Service) ScopeCatalog(ctx context.Context, deployID, query string, limit int) (domain.BackupScopeCatalog, error) {
+func (s *Service) ScopeCatalog(ctx context.Context, deployID, query, cursor string, limit int) (domain.BackupScopeCatalog, error) {
 	instance, err := s.store.Instance(ctx, s.tenantUID, deployID)
 	if err != nil {
 		return domain.BackupScopeCatalog{}, err
@@ -192,7 +192,7 @@ func (s *Service) ScopeCatalog(ctx context.Context, deployID, query string, limi
 	if err != nil {
 		return domain.BackupScopeCatalog{}, err
 	}
-	return probe.ScopeCatalog(ctx, resolved, instance.MultiInstance, query, limit)
+	return probe.ScopeCatalog(ctx, resolved, instance.DeployID, instance.MultiInstance, query, cursor, limit)
 }
 
 // ValidateScope resolves and scans the current tenant's source before a plan
@@ -226,6 +226,17 @@ func (s *Service) Snapshots(ctx context.Context, limit int) ([]domain.Snapshot, 
 		items[index] = s.withStorageStatus(items[index])
 	}
 	return items, nil
+}
+
+func (s *Service) SnapshotsPage(ctx context.Context, cursor string, limit int) (domain.SnapshotPage, error) {
+	page, err := s.store.ListSnapshotsPage(ctx, s.tenantUID, cursor, limit)
+	if err != nil {
+		return domain.SnapshotPage{}, err
+	}
+	for index := range page.Items {
+		page.Items[index] = s.withStorageStatus(page.Items[index])
+	}
+	return page, nil
 }
 
 func (s *Service) Snapshot(ctx context.Context, id string) (domain.Snapshot, error) {

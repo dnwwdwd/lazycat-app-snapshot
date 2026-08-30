@@ -122,16 +122,16 @@ func (s *Server) listBatches(w http.ResponseWriter, r *http.Request) {
 		phase4Unavailable(w, r)
 		return
 	}
-	limit, ok := listLimit(w, r, 100)
+	limit, ok := listLimit(w, r, 200)
 	if !ok {
 		return
 	}
-	items, err := s.queue.Batches(r.Context(), limit)
+	page, err := s.queue.BatchesPage(r.Context(), r.URL.Query().Get("cursor"), limit)
 	if err != nil {
 		phase4Error(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (s *Server) batch(w http.ResponseWriter, r *http.Request) {
@@ -156,12 +156,12 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := s.queue.Tasks(r.Context(), domain.TaskFilter{Limit: limit, Status: r.URL.Query().Get("status"), BatchID: r.URL.Query().Get("batch_id")})
+	page, err := s.queue.TasksPage(r.Context(), domain.TaskFilter{Limit: limit, Cursor: r.URL.Query().Get("cursor"), Status: r.URL.Query().Get("status"), BatchID: r.URL.Query().Get("batch_id"), DeployID: r.URL.Query().Get("deploy_id")})
 	if err != nil {
 		phase4Error(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (s *Server) task(w http.ResponseWriter, r *http.Request) {
@@ -295,6 +295,10 @@ func phase4Unavailable(w http.ResponseWriter, r *http.Request) {
 }
 
 func phase4Error(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, domain.ErrInvalidCursor) {
+		errorJSON(w, r, http.StatusBadRequest, "INVALID_CURSOR", "分页游标无效")
+		return
+	}
 	if errors.Is(err, domain.ErrNotFound) {
 		errorJSON(w, r, http.StatusNotFound, "RESOURCE_NOT_FOUND", "资源不存在")
 		return
