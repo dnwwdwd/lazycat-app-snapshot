@@ -9,3 +9,4 @@
 | REQ-20260828-005 | Local implementation complete — platform verification pending | `Progress/PROG-REQ-20260828-005-runtime-stability-and-ui-refinement.md` | 2026-08-28 |
 | REQ-20260828-006 | Local implementation complete — platform verification pending | `Progress/PROG-REQ-20260828-006-backup-library-detail-and-table-polish.md` | 2026-08-28 |
 | REQ-20260829-007 | Local implementation complete — platform verification pending | `Progress/PROG-REQ-20260829-007-selective-backup-scope.md` | 2026-08-29 |
+| REQ-20260830-008 | Local implementation complete — platform verification pending | `Progress/PROG-REQ-20260830-008-web-ui-api-pagination.md` | 2026-08-30 |

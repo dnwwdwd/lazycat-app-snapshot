@@ -14,3 +14,4 @@
 | DEC-20260827-010 | Implementing locally; platform evidence pending | Operational UI state, alerts, settings, audit and SSE stay current-tenant only; REST remains authoritative after event gaps | REQ-20260827-002 |
 | DEC-20260828-011 | Implemented locally; platform evidence pending | Backup document root uses product-owned `MimiAppBakcup` name without legacy-directory migration | REQ-20260828-005 |
 | DEC-20260829-012 | Implemented locally; platform evidence pending | Per-target selective scope pauses the whole plan when a declared relative path fails validation | REQ-20260829-007 |
+| DEC-20260830-013 | Implemented locally; platform evidence pending | Formal UI uses `web.tsx`; long current-tenant lists use stable opaque cursor pagination and `deployId` associations | REQ-20260830-008 |

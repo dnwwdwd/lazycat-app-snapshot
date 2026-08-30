@@ -2,7 +2,7 @@
 
 > 文档版本：V1  
 > 产品名称：咪咪应用备份（Mimi App Backup）
-> LPK 包标识：`mimi-app-backup`
+> LPK 包标识：`cloud.lazycat.app.mimi-app-backup`
 > 代码仓库：<https://github.com/dnwwdwd/lazycat-app-snapshot>
 > 后端技术栈：Go  
 > 前端技术栈：Vite + React + TypeScript
@@ -170,7 +170,7 @@ POC 的全量探测页面保留在仓库中，供开发验证和故障排查使�
 - SSE。
 - 站内告警、审计和当前用户设置。
 
-生产环境不常驻 Node.js。Vite 在构建阶段生成静态资源，由 Go 同源托管。正式构建脚本先构建 Vite，再编译 `cmd/server` 为 Linux 二进制并一同放入 LPK 内容目录。现有 Vite/React 原型是正式前端入口；POC 诊断页与 API 仍只作为开发资产保留。阶段 0–5 完成本地实现后，`mimi-app-backup-0.1.0.lpk` 已完成本地打包和 lint。
+生产环境不常驻 Node.js。Vite 在构建阶段生成静态资源，由 Go 同源托管。正式构建脚本先构建 Vite，再编译 `cmd/server` 为 Linux 二进制并一同放入 LPK 内容目录。现有 Vite/React 原型是正式前端入口；POC 诊断页与 API 仍只作为开发资产保留。阶段 0–5 完成本地实现后，`cloud.lazycat.app.mimi-app-backup-v0.1.2.lpk` 已完成本地打包和 lint。
 
 ## 5. LPK 配置
 
@@ -217,7 +217,7 @@ application:
   background_task: true
   oidc_redirect_path: /auth/oidc/callback
   routes:
-    - /=http://web.mimi-app-backup.lzcapp:8080
+    - /=http://web.cloud.lazycat.app.mimi-app-backup.lzcapp:8080
 
 services:
   web:
@@ -1065,6 +1065,7 @@ GET  /api/applications
 POST /api/applications/sync
 GET  /api/applications/{appid}
 GET  /api/instances/{deploy_id}
+GET  /api/instances/{deploy_id}/backup-scope
 POST /api/instances/{deploy_id}/probe
 POST /api/instances/{deploy_id}/backup
 GET  /api/backup-jobs/{id}
@@ -1127,7 +1128,9 @@ PUT  /api/settings
 GET  /api/audit
 ```
 
-阶段 5 的 overview 聚合当前租户的应用保护状态、计划、任务、告警、最近审计和存储摘要。设置只开放语言、时区、补跑、重试、保留兼容字段和站内提醒偏好等已被执行引擎采用或可安全展示的值；接口不接受用户 UID、宿主机路径、权限声明或未接入引擎的配置。告警、设置和审计均按当前会话 tenant 过滤。产品不提供保存按钮，设置参数修改后立即写入并提示结果。
+阶段 5 的 overview 聚合当前租户的应用保护状态、计划、任务、告警、最近审计和存储摘要。设置只开放语言、时区、补跑、重试、保留兼容字段和站内提醒偏好等已被执行引擎采用或可安全展示的值；接口不接受用户 UID、宿主机路径、权限声明或未接入引擎的配置。告警、设置和审计均按当前会话 tenant 过滤。设置在用户点击保存后一次提交服务端定义字段并提示结果。
+
+`GET /api/backups`、`/api/batches`、`/api/tasks`、`/api/alerts`、`/api/audit` 和范围目录接口均接受 `cursor`、`limit` 并返回 `nextCursor`。快照按 `finished_at, id` 倒序，批次/任务/告警/审计按 `created_at, id` 倒序；任务的 `status`、`batch_id`、`deploy_id` 与告警的 `status` 保持过滤。范围目录按安全相对路径和类型升序。游标是只用于继续查询的不透明值，绑定当前 tenant、查询类型和上述筛选范围；格式、范围或筛选不匹配时统一返回 `INVALID_CURSOR`。控制库仅增加 tenant 与排序/过滤字段索引，不迁移业务数据。
 
 ### 20.7 实时事件
 
@@ -1165,6 +1168,10 @@ Vite 前端包含：
 
 正式接口客户端使用同源 Cookie。阶段 5 已将首次使用检查、概览、应用列表和详情、计划编辑、任务和批次详情、快照与文件索引、存储维护、告警、设置与审计接入正式 API。前端使用限时 SSE 触发 REST 刷新，不以 SSE 或本地状态替代权威数据，也不生成任务成功、进度、告警或配置保存的模拟结果。
 
+正式界面以 `designs/web.tsx` 为唯一视觉和页面结构来源；其中样式模板逐字迁移到 `apps/web/src/styles.css`。生产代码位于 `apps/web/src/ui/`，包含单一实时数据控制层、共享组件、八个页面与弹窗。控制层并行读取 session、overview、applications、plans、tasks、batches、backups、storage、alerts、settings 和 audit；只保持一条 SSE 订阅，事件在 1.2 秒内合并，断线后 15 秒重连。401 或身份不匹配时回到 OIDC 登录页。
+
+应用、计划目标、任务和快照在前端一律以 `deployId` 关联；`appid` 只用于显示。没有后端字段的运行状态、目录数、任务日志/阶段/吞吐、逐文件哈希、固定配额和固定活动不进入正式页面。总队列暂停/恢复保持禁用，首次使用向导不进入正式入口。
+
 ### 21.2 OIDC
 
 前端不保存 Token。所有请求使用同源 Cookie。收到 401 或 session.expiring 时进入重新登录流程。
@@ -1183,7 +1190,6 @@ POC 诊断页面和独立构建目标已从当前代码库移除。已完成的�
 
 | PRD 页面 | 后端模块 | 主要接口 |
 | --- | --- | --- |
-| 首次使用向导 | auth、identity、platform、source、probe、storage | session、applications、probe、storage |
 | 概览 | operations、plans、queue、snapshots、storage | overview、events |
 | 应用 | catalog、source、probe | applications、instances、probe |
 | 应用详情 | catalog、probe、plans、queue、snapshots | application、instance、plans、tasks、backups |
@@ -1228,7 +1234,7 @@ lazycat-app-snapshot/
 │       └── src/
 │           ├── api/
 │           ├── i18n/
-│           └── prototype/
+│           └── ui/
 ├── api/
 │   └── openapi/
 ├── lzc/
@@ -1399,7 +1405,7 @@ V1 发布前必须满足：
 14. 中文和英文一致。
 15. amd64 和 arm64 通过真机测试。
 
-阶段 0–5 完成本地实现。`mimi-app-backup-0.1.0.lpk` 已在 Go/Vite 构建检查通过后生成并完成本地 lint；真实平台确认不组成独立开发阶段。未获得用户明确授权时，不发布、部署、推送或创建合并请求。
+阶段 0–5 完成本地实现。`cloud.lazycat.app.mimi-app-backup-v0.1.2.lpk` 已在 Go/Vite 构建检查通过后生成并完成本地 lint；真实平台确认不组成独立开发阶段。未获得用户明确授权时，不发布、部署、推送或创建合并请求。
 
 ## 29. 后续能力
 
@@ -1441,6 +1447,10 @@ V1 发布前必须满足：
 
 | 日期 | 文档版本 | 变更 |
 | --- | --- | --- |
+| 2026-08-30 | V1 | LPK 包标识改为 `cloud.lazycat.app.mimi-app-backup`，包内服务路由同步为 `web.cloud.lazycat.app.mimi-app-backup.lzcapp:8080`；中文说明更新为“自动备份懒猫应用数据”。 |
+| 2026-08-30 | V1 | 修复无快照租户读取存储汇总时的空值错误，LPK 版本升至 `0.1.1`，用于替换已安装的 `0.1.0`。 |
+| 2026-08-30 | V1 | 设置页恢复设计源的分区、入口卡片和间距；计划弹窗恢复四步向导。告警严重程度标签置于卡片左上，应用页面与相关弹窗优先展示服务端返回的真实图标。设计源文件和样式原文未改动；LPK 版本升至 `0.1.2`，用于替换已安装的 `0.1.1`。 |
+| 2026-08-30 | V1 | 正式界面改以 `designs/web.tsx` 为唯一视觉和页面结构来源，生产前端改为 `src/ui/` 的实时控制层、页面和弹窗；旧生产原型实现移除。快照、批次、任务、告警、审计和安全范围目录新增 tenant 限制的稳定游标分页，并以 `deployId` 作为前端关联键。 |
 | 2026-08-29 | V1 | 存储页以既有容量汇总计算小占用显示并提供最小可见进度；页面布局重排不涉及接口、存储数据或写入权限。 |
 | 2026-08-29 | V1 | 应用、计划、批次、任务和快照详情统一使用前端单一居中弹窗，并支持任务/快照往返切换；快照详情只在视图层合并元数据并默认截取文件索引，不新增接口、权限或数据写入。 |
 | 2026-08-29 | V1 | 计划创建和编辑界面只产生 `FULL`、`CUSTOM` 范围；`CORE` 仅保留历史记录兼容，避免以目录名或应用类型猜测核心数据。 |
