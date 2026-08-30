@@ -1,3 +1,1 @@
-import PrototypeApp from "./prototype/PrototypeApp";
-
-export default PrototypeApp;
+export { default } from "./ui/App";
