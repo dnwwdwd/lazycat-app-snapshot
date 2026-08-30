@@ -3,7 +3,7 @@ import { Icon, StatusPill, ModePill, AppIcon, Dropdown } from "./components";
 import { applications } from "./data";
 import { api } from "../api/client";
 
-function DetailDrawer({ app, close, onProbe, onStartBackup }) {
+function DetailModalLegacy({ app, close, onProbe, onStartBackup }) {
   const [sharedRiskAccepted, setSharedRiskAccepted] = useState(false);
   const [startingBackup, setStartingBackup] = useState(false);
   const backupable = app.status.includes("BACKUPABLE");
@@ -18,16 +18,16 @@ function DetailDrawer({ app, close, onProbe, onStartBackup }) {
   };
   return (
     <div
-      className="drawer-backdrop"
+      className="modal-backdrop"
       onMouseDown={(e) => e.target === e.currentTarget && close()}
     >
-      <aside className="drawer">
-        <div className="drawer-head">
+      <div className="modal detail-overlay-modal">
+        <div className="modal-head">
           <div style={{ display: "flex", gap: 11, alignItems: "center" }}>
             <AppIcon app={app} size="large" />
             <div>
-              <div className="drawer-title">{app.name}</div>
-              <div className="drawer-sub">
+              <div className="modal-title">{app.name}</div>
+              <div className="detail-sub">
                 {app.appid} · v{app.version}
               </div>
             </div>
@@ -36,7 +36,7 @@ function DetailDrawer({ app, close, onProbe, onStartBackup }) {
             <Icon name="close" size={15} />
           </button>
         </div>
-        <div className="drawer-body">
+        <div className="modal-body detail-overlay-body">
           <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
             <StatusPill status={app.status} />
             <ModePill mode={app.mode} />
@@ -178,7 +178,7 @@ function DetailDrawer({ app, close, onProbe, onStartBackup }) {
             任务历史将在后续阶段提供
           </button>
         </div>
-      </aside>
+      </div>
     </div>
   );
 }
@@ -1066,23 +1066,23 @@ function PlanModalSingleLegacy({ targets, close, showToast }) {
   );
 }
 
-function TaskDrawer({ name, close }) {
+function TaskModalLegacy({ name, close }) {
   return (
     <div
-      className="drawer-backdrop"
+      className="modal-backdrop"
       onMouseDown={(e) => e.target === e.currentTarget && close()}
     >
-      <aside className="drawer">
-        <div className="drawer-head">
+      <div className="modal detail-overlay-modal">
+        <div className="modal-head">
           <div>
-            <div className="drawer-title">任务详情</div>
-            <div className="drawer-sub">{name} · job-0827-0200</div>
+            <div className="modal-title">任务详情</div>
+            <div className="detail-sub">{name} · job-0827-0200</div>
           </div>
           <button className="icon-btn" onClick={close}>
             <Icon name="close" size={15} />
           </button>
         </div>
-        <div className="drawer-body">
+        <div className="modal-body detail-overlay-body">
           <div className="notice good">
             <Icon name="check" size={14} />
             <span>
@@ -1138,7 +1138,7 @@ function TaskDrawer({ name, close }) {
           </div>
           <div className="section-label">输出路径</div>
           <div className="tree">
-            <div className="folder">LazycatAppBackup/</div>
+            <div className="folder">MimiAppBakcup/</div>
             <div>
               └── <span className="folder">20260827T020000.000Z/</span>
             </div>
@@ -1165,28 +1165,28 @@ function TaskDrawer({ name, close }) {
             </button>
           </div>
         </div>
-      </aside>
+      </div>
     </div>
   );
 }
 
-function SnapshotDrawer({ snap, close, showToast }) {
+function SnapshotModalLegacy({ snap, close, showToast }) {
   return (
     <div
-      className="drawer-backdrop"
+      className="modal-backdrop"
       onMouseDown={(e) => e.target === e.currentTarget && close()}
     >
-      <aside className="drawer">
-        <div className="drawer-head">
+      <div className="modal detail-overlay-modal">
+        <div className="modal-head">
           <div>
-            <div className="drawer-title">{snap.app}</div>
-            <div className="drawer-sub">快照详情 · {snap.time}</div>
+            <div className="modal-title">{snap.app}</div>
+            <div className="detail-sub">快照详情 · {snap.time}</div>
           </div>
           <button className="icon-btn" onClick={close}>
             <Icon name="close" size={15} />
           </button>
         </div>
-        <div className="drawer-body">
+        <div className="modal-body detail-overlay-body">
           <div style={{ display: "flex", gap: 7 }}>
             <StatusPill status={snap.integrity} />
             <ModePill mode={snap.mode} />
@@ -1197,7 +1197,7 @@ function SnapshotDrawer({ snap, close, showToast }) {
               <div>
                 <strong>相对路径</strong>
                 <p className="mono">
-                  LazycatAppBackup/20260827T020000.000Z/{snap.deploy}/
+                  MimiAppBakcup/20260827T020000.000Z/{snap.deploy}/
                 </p>
               </div>
               <Icon name="folder" size={14} />
@@ -1290,7 +1290,7 @@ function SnapshotDrawer({ snap, close, showToast }) {
             </button>
           </div>
         </div>
-      </aside>
+      </div>
     </div>
   );
 }
@@ -1435,12 +1435,22 @@ function SessionModal({ close, showToast, session }) {
   );
 }
 
+// Compatibility aliases for the retired overlay API. These legacy exports now
+// render centered modals as well, so callers cannot accidentally reintroduce a
+// second detail surface.
+const DetailDrawer = DetailModalLegacy;
+const TaskDrawer = TaskModalLegacy;
+const SnapshotDrawer = SnapshotModalLegacy;
+
 export {
+  DetailModalLegacy,
   DetailDrawer,
   PlanModal,
   PlanModalSingle,
   PlanModalSingleLegacy,
+  TaskModalLegacy,
   TaskDrawer,
+  SnapshotModalLegacy,
   SnapshotDrawer,
   RiskModal,
   SessionModal,

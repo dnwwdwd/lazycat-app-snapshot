@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -222,6 +223,18 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE sessions ADD COLUMN gateway_uid TEXT NOT NULL DEFAULT ''`,
 	}}, {version: 11, statements: []string{
 		`ALTER TABLE applications ADD COLUMN icon TEXT NOT NULL DEFAULT ''`,
+	}}, {version: 12, statements: []string{
+		`UPDATE backup_plans SET target_kind='EXPLICIT', enabled=0, next_run_at=NULL, updated_at=strftime('%s','now') WHERE target_kind='ALL_BACKUPABLE'`,
+	}}, {version: 13, statements: []string{
+		`ALTER TABLE backup_plans ADD COLUMN execution_time TEXT NOT NULL DEFAULT '02:00'`,
+	}}, {version: 14, statements: []string{
+		`ALTER TABLE plan_targets ADD COLUMN scope_json TEXT NOT NULL DEFAULT '{"mode":"FULL","revision":1}'`,
+		`ALTER TABLE backup_plans ADD COLUMN pause_reason_json TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE backup_jobs ADD COLUMN scope_json TEXT NOT NULL DEFAULT '{"mode":"FULL","revision":1}'`,
+		`ALTER TABLE backup_tasks ADD COLUMN scope_json TEXT NOT NULL DEFAULT '{"mode":"FULL","revision":1}'`,
+		`ALTER TABLE snapshots ADD COLUMN scope_json TEXT NOT NULL DEFAULT '{"mode":"FULL","revision":1}'`,
+	}}, {version: 15, statements: []string{
+		`ALTER TABLE backup_tasks ADD COLUMN scope_validation_json TEXT NOT NULL DEFAULT ''`,
 	}}}
 	for _, migration := range migrations {
 		var applied int
@@ -599,9 +612,13 @@ func (s *Store) CreateBackupJob(ctx context.Context, job domain.BackupJob) error
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO backup_jobs(id, tenant_uid, oidc_subject, user_role, appid, application_name, application_version, deploy_id, multi_instance, shared_risk_accepted, status, error_code, snapshot_id, created_at, started_at, finished_at, plan_id, batch_id, task_id, trigger_type, scheduled_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED', '', '', ?, NULL, NULL, ?, ?, ?, ?, ?)`,
-		job.ID, job.TenantUID, job.OIDCSubject, job.UserRole, job.AppID, job.ApplicationName, job.ApplicationVersion, job.DeployID, boolInt(job.MultiInstance), boolInt(job.SharedRiskAccepted), unix(job.CreatedAt), job.PlanID, job.BatchID, job.TaskID, job.TriggerType, nullableUnix(job.ScheduledAt))
+	scope, err := json.Marshal(job.Scope)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO backup_jobs(id, tenant_uid, oidc_subject, user_role, appid, application_name, application_version, deploy_id, multi_instance, shared_risk_accepted, status, error_code, snapshot_id, created_at, started_at, finished_at, plan_id, batch_id, task_id, trigger_type, scheduled_at, scope_json)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED', '', '', ?, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
+		job.ID, job.TenantUID, job.OIDCSubject, job.UserRole, job.AppID, job.ApplicationName, job.ApplicationVersion, job.DeployID, boolInt(job.MultiInstance), boolInt(job.SharedRiskAccepted), unix(job.CreatedAt), job.PlanID, job.BatchID, job.TaskID, job.TriggerType, nullableUnix(job.ScheduledAt), string(scope))
 	if err != nil {
 		return err
 	}
@@ -648,7 +665,7 @@ func (s *Store) InterruptOpenBackupJobs(ctx context.Context, tenant string, fini
 }
 
 func (s *Store) BackupJob(ctx context.Context, tenant, id string) (domain.BackupJob, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_uid, oidc_subject, user_role, appid, application_name, application_version, deploy_id, multi_instance, shared_risk_accepted, status, error_code, snapshot_id, created_at, started_at, finished_at, plan_id, batch_id, task_id, trigger_type, scheduled_at
+	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_uid, oidc_subject, user_role, appid, application_name, application_version, deploy_id, multi_instance, shared_risk_accepted, status, error_code, snapshot_id, created_at, started_at, finished_at, plan_id, batch_id, task_id, trigger_type, scheduled_at, scope_json
 		FROM backup_jobs WHERE tenant_uid=? AND id=?`, tenant, id)
 	return scanBackupJob(row)
 }
@@ -662,13 +679,17 @@ func (s *Store) CommitSnapshot(ctx context.Context, snapshot domain.Snapshot) er
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO snapshots(id, tenant_uid, job_id, appid, application_name, application_version, deploy_id, multi_instance, shared_instance_warning, status, storage_path, archive_name, archive_size, archive_sha256, original_bytes, file_count, directory_count, sqlite_count, skipped_count, warning_count, captured_at, finished_at, verification_status, verified_at, plan_id, batch_id, task_id, trigger_type, retention_status, trashed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	scope, err := json.Marshal(snapshot.Scope)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO snapshots(id, tenant_uid, job_id, appid, application_name, application_version, deploy_id, multi_instance, shared_instance_warning, status, storage_path, archive_name, archive_size, archive_sha256, original_bytes, file_count, directory_count, sqlite_count, skipped_count, warning_count, captured_at, finished_at, verification_status, verified_at, plan_id, batch_id, task_id, trigger_type, retention_status, trashed_at, scope_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		snapshot.ID, snapshot.TenantUID, snapshot.JobID, snapshot.AppID, snapshot.ApplicationName, snapshot.ApplicationVersion,
 		snapshot.DeployID, boolInt(snapshot.MultiInstance), boolInt(snapshot.SharedInstanceWarning), snapshot.Status,
 		snapshot.StoragePath, snapshot.ArchiveName, snapshot.ArchiveSize, snapshot.ArchiveSHA256, snapshot.OriginalBytes,
 		snapshot.FileCount, snapshot.DirectoryCount, snapshot.SQLiteCount, snapshot.SkippedCount, snapshot.WarningCount,
-		unix(snapshot.CapturedAt), unix(snapshot.FinishedAt), snapshot.VerificationStatus, nullableUnix(snapshot.VerifiedAt), snapshot.PlanID, snapshot.BatchID, snapshot.TaskID, snapshot.TriggerType, snapshot.RetentionStatus, nullableUnix(snapshot.TrashedAt))
+		unix(snapshot.CapturedAt), unix(snapshot.FinishedAt), snapshot.VerificationStatus, nullableUnix(snapshot.VerifiedAt), snapshot.PlanID, snapshot.BatchID, snapshot.TaskID, snapshot.TriggerType, snapshot.RetentionStatus, nullableUnix(snapshot.TrashedAt), string(scope))
 	if err != nil {
 		return err
 	}
@@ -690,7 +711,7 @@ func (s *Store) ListSnapshots(ctx context.Context, tenant string, limit int) ([]
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_uid, job_id, appid, application_name, application_version, deploy_id, multi_instance, shared_instance_warning, status, storage_path, archive_name, archive_size, archive_sha256, original_bytes, file_count, directory_count, sqlite_count, skipped_count, warning_count, captured_at, finished_at, verification_status, verified_at, plan_id, batch_id, task_id, trigger_type, retention_status, trashed_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_uid, job_id, appid, application_name, application_version, deploy_id, multi_instance, shared_instance_warning, status, storage_path, archive_name, archive_size, archive_sha256, original_bytes, file_count, directory_count, sqlite_count, skipped_count, warning_count, captured_at, finished_at, verification_status, verified_at, plan_id, batch_id, task_id, trigger_type, retention_status, trashed_at, scope_json
 		FROM snapshots WHERE tenant_uid=? AND retention_status <> 'TRASHED' ORDER BY captured_at DESC, id DESC LIMIT ?`, tenant, limit)
 	if err != nil {
 		return nil, err
@@ -708,7 +729,7 @@ func (s *Store) ListSnapshots(ctx context.Context, tenant string, limit int) ([]
 }
 
 func (s *Store) Snapshot(ctx context.Context, tenant, id string) (domain.Snapshot, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_uid, job_id, appid, application_name, application_version, deploy_id, multi_instance, shared_instance_warning, status, storage_path, archive_name, archive_size, archive_sha256, original_bytes, file_count, directory_count, sqlite_count, skipped_count, warning_count, captured_at, finished_at, verification_status, verified_at, plan_id, batch_id, task_id, trigger_type, retention_status, trashed_at
+	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_uid, job_id, appid, application_name, application_version, deploy_id, multi_instance, shared_instance_warning, status, storage_path, archive_name, archive_size, archive_sha256, original_bytes, file_count, directory_count, sqlite_count, skipped_count, warning_count, captured_at, finished_at, verification_status, verified_at, plan_id, batch_id, task_id, trigger_type, retention_status, trashed_at, scope_json
 		FROM snapshots WHERE tenant_uid=? AND id=?`, tenant, id)
 	return scanSnapshot(row)
 }
@@ -740,8 +761,9 @@ func scanBackupJob(row scanner) (domain.BackupJob, error) {
 	var multi, shared int
 	var created int64
 	var started, finished, scheduled sql.NullInt64
+	var scope string
 	err := row.Scan(&result.ID, &result.TenantUID, &result.OIDCSubject, &result.UserRole, &result.AppID, &result.ApplicationName, &result.ApplicationVersion, &result.DeployID,
-		&multi, &shared, &result.Status, &result.ErrorCode, &result.SnapshotID, &created, &started, &finished, &result.PlanID, &result.BatchID, &result.TaskID, &result.TriggerType, &scheduled)
+		&multi, &shared, &result.Status, &result.ErrorCode, &result.SnapshotID, &created, &started, &finished, &result.PlanID, &result.BatchID, &result.TaskID, &result.TriggerType, &scheduled, &scope)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, domain.ErrNotFound
 	}
@@ -751,6 +773,10 @@ func scanBackupJob(row scanner) (domain.BackupJob, error) {
 	result.MultiInstance, result.SharedRiskAccepted = multi != 0, shared != 0
 	result.CreatedAt = time.Unix(created, 0).UTC()
 	result.StartedAt, result.FinishedAt, result.ScheduledAt = fromUnix(started), fromUnix(finished), fromUnix(scheduled)
+	_ = json.Unmarshal([]byte(scope), &result.Scope)
+	if result.Scope.Mode == "" {
+		result.Scope = domain.BackupScope{Mode: "FULL", Revision: 1}
+	}
 	return result, nil
 }
 
@@ -759,10 +785,11 @@ func scanSnapshot(row scanner) (domain.Snapshot, error) {
 	var multi, shared int
 	var captured, finished int64
 	var verified, trashed sql.NullInt64
+	var scope string
 	err := row.Scan(&result.ID, &result.TenantUID, &result.JobID, &result.AppID, &result.ApplicationName, &result.ApplicationVersion,
 		&result.DeployID, &multi, &shared, &result.Status, &result.StoragePath, &result.ArchiveName, &result.ArchiveSize,
 		&result.ArchiveSHA256, &result.OriginalBytes, &result.FileCount, &result.DirectoryCount, &result.SQLiteCount,
-		&result.SkippedCount, &result.WarningCount, &captured, &finished, &result.VerificationStatus, &verified, &result.PlanID, &result.BatchID, &result.TaskID, &result.TriggerType, &result.RetentionStatus, &trashed)
+		&result.SkippedCount, &result.WarningCount, &captured, &finished, &result.VerificationStatus, &verified, &result.PlanID, &result.BatchID, &result.TaskID, &result.TriggerType, &result.RetentionStatus, &trashed, &scope)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, domain.ErrNotFound
 	}
@@ -771,6 +798,10 @@ func scanSnapshot(row scanner) (domain.Snapshot, error) {
 	}
 	result.MultiInstance, result.SharedInstanceWarning = multi != 0, shared != 0
 	result.CapturedAt, result.FinishedAt, result.VerifiedAt, result.TrashedAt = time.Unix(captured, 0).UTC(), time.Unix(finished, 0).UTC(), fromUnix(verified), fromUnix(trashed)
+	_ = json.Unmarshal([]byte(scope), &result.Scope)
+	if result.Scope.Mode == "" {
+		result.Scope = domain.BackupScope{Mode: "FULL", Revision: 1}
+	}
 	return result, nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"cloud.lazycat.app.backup/apps/server/internal/auth"
 	"cloud.lazycat.app.backup/apps/server/internal/backup"
 	"cloud.lazycat.app.backup/apps/server/internal/catalog"
+	"cloud.lazycat.app.backup/apps/server/internal/domain"
 	"cloud.lazycat.app.backup/apps/server/internal/httpapi"
 	"cloud.lazycat.app.backup/apps/server/internal/operations"
 	"cloud.lazycat.app.backup/apps/server/internal/persistence"
@@ -127,7 +128,10 @@ func main() {
 		slog.Error("configure operations service", "error", err)
 		os.Exit(1)
 	}
-	queueService, err := queue.New(store, backupService, queue.Config{TenantUID: config.TenantUID, AfterSucceeded: snapshotService.ApplyRetentionForTask, OnTaskUpdated: operationsService.TaskUpdated, OnBatchUpdated: operationsService.BatchUpdated})
+	queueService, err := queue.New(store, backupService, queue.Config{TenantUID: config.TenantUID, OnTaskUpdated: operationsService.TaskUpdated, OnBatchUpdated: operationsService.BatchUpdated, OnScopeInvalid: func(ctx context.Context, reason domain.PlanPauseReason) {
+		_ = operationsService.Record(ctx, "plan.scope_paused", "", "plan", reason.DeployID, reason)
+		_, _ = operationsService.CreateAlert(ctx, "WARNING", "PLAN_SCOPE_INVALID", reason.Code, "备份计划已暂停", "所选目录或文件已删除、移动或类型变化，请重新选择范围后保存计划。", "application", reason.DeployID)
+	}})
 	if err != nil {
 		slog.Error("configure persistent backup queue", "error", err)
 		os.Exit(1)

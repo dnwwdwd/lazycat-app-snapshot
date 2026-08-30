@@ -8,7 +8,7 @@ import (
 	"cloud.lazycat.app.backup/apps/server/internal/domain"
 )
 
-const snapshotColumns = `id, tenant_uid, job_id, appid, application_name, application_version, deploy_id, multi_instance, shared_instance_warning, status, storage_path, archive_name, archive_size, archive_sha256, original_bytes, file_count, directory_count, sqlite_count, skipped_count, warning_count, captured_at, finished_at, verification_status, verified_at, plan_id, batch_id, task_id, trigger_type, retention_status, trashed_at`
+const snapshotColumns = `id, tenant_uid, job_id, appid, application_name, application_version, deploy_id, multi_instance, shared_instance_warning, status, storage_path, archive_name, archive_size, archive_sha256, original_bytes, file_count, directory_count, sqlite_count, skipped_count, warning_count, captured_at, finished_at, verification_status, verified_at, plan_id, batch_id, task_id, trigger_type, retention_status, trashed_at, scope_json`
 
 func (s *Store) AllSnapshots(ctx context.Context, tenant string) ([]domain.Snapshot, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT "+snapshotColumns+" FROM snapshots WHERE tenant_uid=? ORDER BY captured_at DESC, id DESC", tenant)

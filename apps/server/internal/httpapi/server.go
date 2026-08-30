@@ -78,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/applications/sync", s.syncApplications)
 		r.Get("/api/applications/{appid}", s.application)
 		r.Get("/api/instances/{deployID}", s.instance)
+		r.Get("/api/instances/{deployID}/backup-scope", s.backupScope)
 		r.Post("/api/instances/{deployID}/probe", s.probeInstance)
 		r.Post("/api/instances/{deployID}/backup", s.startBackup)
 		r.Get("/api/backup-jobs/{jobID}", s.backupJob)
@@ -88,7 +89,6 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/plans", s.createPlan)
 		r.Get("/api/plans/{planID}", s.plan)
 		r.Put("/api/plans/{planID}", s.updatePlan)
-		r.Delete("/api/plans/{planID}", s.deletePlan)
 		r.Post("/api/plans/{planID}/run", s.runPlan)
 		r.Post("/api/plans/{planID}/pause", s.pausePlan)
 		r.Post("/api/plans/{planID}/resume", s.resumePlan)
@@ -100,10 +100,8 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/tasks/{taskID}/retry", s.retryTask)
 		r.Get("/api/backups/{snapshotID}/files", s.snapshotFiles)
 		r.Post("/api/backups/{snapshotID}/export", s.exportSnapshot)
-		r.Delete("/api/backups/{snapshotID}", s.deleteSnapshot)
 		r.Get("/api/storage", s.storageSummary)
 		r.Post("/api/storage/scan", s.scanStorage)
-		r.Post("/api/storage/cleanup", s.cleanupStorage)
 		r.Get("/api/overview", s.overview)
 		r.Get("/api/alerts", s.listAlerts)
 		r.Post("/api/alerts/{alertID}/read", s.readAlert)
@@ -311,6 +309,20 @@ func (s *Server) instance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) backupScope(w http.ResponseWriter, r *http.Request) {
+	if s.backups == nil {
+		phase4Unavailable(w, r)
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	value, err := s.backups.ScopeCatalog(r.Context(), chi.URLParam(r, "deployID"), r.URL.Query().Get("q"), limit)
+	if err != nil {
+		phase4Error(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, value)
 }
 func (s *Server) probeInstance(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.catalog.Instance(r.Context(), chi.URLParam(r, "deployID")); errors.Is(err, domain.ErrNotFound) {

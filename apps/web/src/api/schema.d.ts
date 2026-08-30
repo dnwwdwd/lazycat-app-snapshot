@@ -374,6 +374,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/instances/{deployId}/backup-scope": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read safe relative paths for a current-tenant selective backup plan */
+        get: {
+            parameters: {
+                query?: {
+                    q?: string;
+                    limit?: components["parameters"]["Limit"];
+                };
+                header?: never;
+                path: {
+                    deployId: components["parameters"]["DeployId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Relative metadata only */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BackupScopeCatalog"];
+                    };
+                };
+                404: components["responses"]["ResourceNotFound"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/instances/{deployId}/backup": {
         parameters: {
             query?: never;
@@ -529,29 +571,7 @@ export interface paths {
         };
         put?: never;
         post?: never;
-        /** Move one current-tenant snapshot to the backup-library trash */
-        delete: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    snapshotId: components["parameters"]["SnapshotId"];
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Snapshot moved to trash */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Snapshot"];
-                    };
-                };
-            };
-        };
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -716,26 +736,7 @@ export interface paths {
             };
         };
         post?: never;
-        delete: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    planId: components["parameters"]["PlanId"];
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Plan deleted */
-                204: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1220,41 +1221,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/storage/cleanup": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Expired temporary data cleanup completed */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["CleanupResult"];
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/overview": {
         parameters: {
             query?: never;
@@ -1684,6 +1650,7 @@ export interface components {
             triggerType?: string;
             /** Format: date-time */
             scheduledAt?: string;
+            scope?: components["schemas"]["BackupScope"];
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
@@ -1707,8 +1674,14 @@ export interface components {
             sharedInstanceWarning: boolean;
             /** @enum {string} */
             status: "COMPLETED";
-            /** @description Safe path relative to LazycatAppBackup; never an absolute source or host path. */
+            /** @description Safe path relative to MimiAppBakcup; never an absolute source or host path. */
             storagePath: string;
+            /**
+             * @description Whether the recorded cloud directory is currently reachable; detail views do not run archive verification.
+             * @enum {string}
+             */
+            storageStatus?: "AVAILABLE" | "MISSING" | "INACCESSIBLE";
+            scope?: components["schemas"]["BackupScope"];
             /** @enum {string} */
             archiveName: "snapshot.zip";
             /** Format: int64 */
@@ -1748,6 +1721,37 @@ export interface components {
              * @description Compatibility metadata; it does not gate plan creation.
              */
             sharedRiskAccepted?: boolean;
+            scope?: components["schemas"]["BackupScope"];
+        };
+        BackupScope: {
+            /** @enum {string} */
+            mode: "FULL" | "CORE" | "CUSTOM";
+            directories?: string[];
+            files?: string[];
+            revision: number;
+            /** @description Server-generated readable range summary. */
+            summary?: string;
+        };
+        PlanPauseReason: {
+            code: string;
+            deployId: string;
+            path?: string;
+            expected?: string;
+            /** Format: date-time */
+            detectedAt: string;
+            scopeRevision?: number;
+        };
+        ScopeEntry: {
+            path: string;
+            /** @enum {string} */
+            type: "directory" | "file";
+            /** Format: int64 */
+            size: number;
+            sqlite: boolean;
+            selectable: boolean;
+        };
+        BackupScopeCatalog: {
+            items: components["schemas"]["ScopeEntry"][];
         };
         RetryPolicy: {
             maxRetries: number;
@@ -1763,7 +1767,7 @@ export interface components {
         PlanInput: {
             name: string;
             /** @enum {string} */
-            targetKind: "EXPLICIT" | "ALL_BACKUPABLE";
+            targetKind: "EXPLICIT";
             targets: components["schemas"]["PlanTarget"][];
             /**
              * @deprecated
@@ -1772,6 +1776,11 @@ export interface components {
             sharedRiskAccepted?: boolean;
             /** @enum {string} */
             scheduleType: "MANUAL" | "HOURLY" | "DAILY" | "WEEKLY" | "CRON";
+            /**
+             * @description Local execution time for daily and weekly schedules.
+             * @default 02:00
+             */
+            executionTime: string;
             cronExpression?: string;
             timezone: string;
             enabled: boolean;
@@ -1784,6 +1793,7 @@ export interface components {
             id: string;
             /** Format: date-time */
             nextRunAt?: string;
+            pauseReason?: components["schemas"]["PlanPauseReason"];
             /** Format: date-time */
             lastScheduledAt?: string;
             /** Format: date-time */
@@ -1853,6 +1863,8 @@ export interface components {
             /** Format: date-time */
             heartbeatAt?: string;
             snapshotId?: string;
+            scope?: components["schemas"]["BackupScope"];
+            scopeValidation?: components["schemas"]["PlanPauseReason"];
         };
         TaskAttempt: {
             id: string;
@@ -1893,7 +1905,7 @@ export interface components {
         ExportAccepted: {
             /** @constant */
             accepted: true;
-            /** @description Safe path relative to LazycatAppBackup. */
+            /** @description Safe path relative to MimiAppBakcup. */
             exportPath: string;
         };
         StorageSummary: {
@@ -1903,14 +1915,9 @@ export interface components {
             /** Format: int64 */
             availableBytes: number;
             partialCount: number;
-            trashCount: number;
             missingCount: number;
             /** Format: date-time */
             lastVerifiedAt?: string;
-        };
-        CleanupResult: {
-            partialRemoved: number;
-            trashRemoved: number;
         };
         Settings: {
             /** @enum {string} */

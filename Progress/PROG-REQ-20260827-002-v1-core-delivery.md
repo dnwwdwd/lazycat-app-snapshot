@@ -62,7 +62,7 @@
 - 新增 `cmd/server`、OIDC Authorization Code + PKCE、服务端会话和每次请求的会话网关 UID/`X-HC-User-ID` 校验。
 - 在 `/lzcapp/var/backup.sqlite` 建立版本化控制库迁移，保存带 `tenant_uid` 的登录事务、会话、应用、实例、数据库发现和同步状态。
 - 复用 POC 的当前用户 SDK 目录边界、固定 appvar 投影和只读探测规则，提供目录同步、游标分页、实例详情和受限刷新 API。
-- 建立 `api/openapi/openapi.yaml` 与前端生成类型检查；应用资产柜、服务端筛选/游标分页、详情抽屉、重新检测、顶部用户信息和退出登录接入同源 API。
+- 建立 `api/openapi/openapi.yaml` 与前端生成类型检查；应用资产柜、服务端筛选/游标分页、统一详情弹窗、重新检测、顶部用户信息和退出登录接入同源 API。
 - 正式 LPK 构建改为 `cmd/server`；`cmd/poc` 和独立 POC 构建脚本继续用于平台诊断。
 - 新增当前租户手动备份作业：实例复核、单实例共享风险提示、完整预检、SQLite Online Backup、严格普通文件读取、ZIP 内外 manifest、SHA-256、当前用户网盘原子提交和快照记录。
 - 新增手动作业状态、快照列表/详情和快速校验 API；应用页的立即备份和最小备份库改用正式同源 API，不再模拟完成进度或快照数据。

@@ -9,7 +9,8 @@ mkdir -p "$DIST_ROOT/bin" "$DIST_ROOT/web" "$DIST_ROOT/lzc"
 
 cd "$REPO_ROOT"
 npm ci --prefix apps/web
-npm run build --prefix apps/web
+npm run api:generate --prefix apps/web
+(cd apps/web && npx vite build)
 
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -trimpath -ldflags='-s -w' \

@@ -25,6 +25,7 @@ export type BackupJob = components["schemas"]["BackupJob"];
 export type ManualBackupAccepted = components["schemas"]["ManualBackupAccepted"];
 export type Snapshot = components["schemas"]["Snapshot"];
 export type SnapshotList = components["schemas"]["SnapshotList"];
+export type BackupScopeCatalog = components["schemas"]["BackupScopeCatalog"];
 export type PlanInput = components["schemas"]["PlanInput"];
 export type BackupPlan = components["schemas"]["BackupPlan"];
 export type PlanList = components["schemas"]["PlanList"];
@@ -114,6 +115,8 @@ export const api = {
     ),
   instance: (deployId: string) =>
     request<ApplicationInstance>(`/api/instances/${encodeURIComponent(deployId)}`),
+  backupScope: (deployId: string, query = "") =>
+    request<BackupScopeCatalog>(`/api/instances/${encodeURIComponent(deployId)}/backup-scope${query ? `?q=${encodeURIComponent(query)}` : ""}`),
   syncApplications: () =>
     request<SyncAccepted>("/api/applications/sync", { method: "POST" }),
   probeInstance: (deployId: string) =>
@@ -142,24 +145,21 @@ export const api = {
     request<SnapshotFileList>(`/api/backups/${encodeURIComponent(snapshotId)}/files`),
   exportBackup: (snapshotId: string) =>
     request<{ accepted: true; exportPath: string }>(`/api/backups/${encodeURIComponent(snapshotId)}/export`, { method: "POST" }),
-  deleteBackup: (snapshotId: string) =>
-    request<Snapshot>(`/api/backups/${encodeURIComponent(snapshotId)}`, { method: "DELETE" }),
   plans: () => request<PlanList>("/api/plans"),
   plan: (planId: string) => request<BackupPlan>(`/api/plans/${encodeURIComponent(planId)}`),
   createPlan: (input: PlanInput) => request<BackupPlan>("/api/plans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) }),
   updatePlan: (planId: string, input: PlanInput) => request<BackupPlan>(`/api/plans/${encodeURIComponent(planId)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) }),
-  deletePlan: (planId: string) => request<void>(`/api/plans/${encodeURIComponent(planId)}`, { method: "DELETE" }),
   runPlan: (planId: string) => request<{ accepted: true; batch: BackupBatch }>(`/api/plans/${encodeURIComponent(planId)}/run`, { method: "POST" }),
   pausePlan: (planId: string) => request<BackupPlan>(`/api/plans/${encodeURIComponent(planId)}/pause`, { method: "POST" }),
   resumePlan: (planId: string) => request<BackupPlan>(`/api/plans/${encodeURIComponent(planId)}/resume`, { method: "POST" }),
   batches: (limit = 50) => request<BatchList>(`/api/batches?limit=${encodeURIComponent(limit)}`),
+  batch: (batchId: string) => request<BackupBatch>(`/api/batches/${encodeURIComponent(batchId)}`),
   tasks: (params: URLSearchParams = new URLSearchParams()) => request<TaskList>(`/api/tasks${params.size ? `?${params}` : ""}`),
   task: (taskId: string) => request<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}`),
   cancelTask: (taskId: string) => request<BackupTask>(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" }),
   retryTask: (taskId: string) => request<BackupTask>(`/api/tasks/${encodeURIComponent(taskId)}/retry`, { method: "POST" }),
   storage: () => request<StorageSummary>("/api/storage"),
   scanStorage: () => request<StorageSummary>("/api/storage/scan", { method: "POST" }),
-  cleanupStorage: () => request<{ partialRemoved: number; trashRemoved: number }>("/api/storage/cleanup", { method: "POST" }),
   overview: () => request<Overview>("/api/overview"),
   alerts: (params: URLSearchParams = new URLSearchParams()) => request<AlertList>(`/api/alerts${params.size ? `?${params}` : ""}`),
   readAlert: (alertId: string) => request<Alert>(`/api/alerts/${encodeURIComponent(alertId)}/read`, { method: "POST" }),

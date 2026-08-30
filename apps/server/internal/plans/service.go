@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -64,7 +65,8 @@ func (s *Service) Update(ctx context.Context, id string, input domain.PlanInput)
 	if err := s.validateTargets(ctx, plan); err != nil {
 		return domain.BackupPlan{}, err
 	}
-	if err := s.store.UpdatePlan(ctx, s.tenantUID, plan); err != nil {
+	changed := applyScopeRevisions(&plan, current)
+	if err := s.store.UpdatePlan(ctx, s.tenantUID, plan, changed); err != nil {
 		return domain.BackupPlan{}, err
 	}
 	return s.store.Plan(ctx, s.tenantUID, id)
@@ -133,6 +135,14 @@ func (s *Service) RunDue(ctx context.Context, now time.Time) error {
 				}
 			} else if _, err := s.queue.RunPlan(ctx, plan, "scheduled", scheduled); err != nil && !errors.Is(err, domain.ErrConflict) {
 				return err
+			} else {
+				latest, lookupErr := s.store.Plan(ctx, s.tenantUID, plan.ID)
+				if lookupErr != nil {
+					return lookupErr
+				}
+				if !latest.Enabled && latest.PauseReason != nil {
+					break
+				}
 			}
 			if err := s.store.AdvancePlan(ctx, s.tenantUID, plan.ID, scheduled, next, now); err != nil {
 				return err
@@ -144,21 +154,34 @@ func (s *Service) RunDue(ctx context.Context, now time.Time) error {
 }
 
 func (s *Service) normalize(input domain.PlanInput, now time.Time) (domain.BackupPlan, error) {
-	plan := domain.BackupPlan{Name: strings.TrimSpace(input.Name), TargetKind: input.TargetKind, Targets: input.Targets, SharedRiskAccepted: input.SharedRiskAccepted, ScheduleType: input.ScheduleType, CronExpression: strings.TrimSpace(input.CronExpression), Timezone: strings.TrimSpace(input.Timezone), Enabled: input.Enabled, CatchUp: input.CatchUp, MaxCatchUpSeconds: input.MaxCatchUpSeconds, Retry: input.Retry, Retention: input.Retention}
+	plan := domain.BackupPlan{Name: strings.TrimSpace(input.Name), TargetKind: input.TargetKind, Targets: input.Targets, SharedRiskAccepted: input.SharedRiskAccepted, ScheduleType: input.ScheduleType, ExecutionTime: strings.TrimSpace(input.ExecutionTime), CronExpression: strings.TrimSpace(input.CronExpression), Timezone: strings.TrimSpace(input.Timezone), Enabled: input.Enabled, CatchUp: input.CatchUp, MaxCatchUpSeconds: input.MaxCatchUpSeconds, Retry: input.Retry, Retention: input.Retention}
 	if plan.Name == "" || len(plan.Name) > 120 {
 		return domain.BackupPlan{}, &ValidationError{Code: "INVALID_PLAN_NAME"}
 	}
 	if plan.TargetKind == "" {
 		plan.TargetKind = "EXPLICIT"
 	}
-	if plan.TargetKind != "EXPLICIT" && plan.TargetKind != "ALL_BACKUPABLE" {
+	if plan.TargetKind != "EXPLICIT" {
 		return domain.BackupPlan{}, &ValidationError{Code: "INVALID_PLAN_TARGETS"}
 	}
-	if plan.TargetKind == "EXPLICIT" && len(plan.Targets) == 0 || plan.TargetKind == "ALL_BACKUPABLE" && len(plan.Targets) != 0 {
+	if len(plan.Targets) == 0 {
 		return domain.BackupPlan{}, &ValidationError{Code: "INVALID_PLAN_TARGETS"}
+	}
+	for index := range plan.Targets {
+		scope, err := normalizeScope(plan.Targets[index].Scope)
+		if err != nil {
+			return domain.BackupPlan{}, &ValidationError{Code: "INVALID_BACKUP_SCOPE"}
+		}
+		plan.Targets[index].Scope = scope
 	}
 	if plan.ScheduleType == "" {
 		plan.ScheduleType = "DAILY"
+	}
+	if plan.ExecutionTime == "" {
+		plan.ExecutionTime = "02:00"
+	}
+	if _, err := time.Parse("15:04", plan.ExecutionTime); err != nil {
+		return domain.BackupPlan{}, &ValidationError{Code: "INVALID_EXECUTION_TIME"}
 	}
 	if plan.Timezone == "" {
 		plan.Timezone = "Asia/Shanghai"
@@ -191,7 +214,7 @@ func (s *Service) normalize(input domain.PlanInput, now time.Time) (domain.Backu
 		plan.Enabled, plan.CronExpression = false, ""
 		return plan, nil
 	}
-	expression, err := cronExpression(plan.ScheduleType, plan.CronExpression)
+	expression, err := cronExpression(plan.ScheduleType, plan.ExecutionTime, plan.CronExpression)
 	if err != nil {
 		return domain.BackupPlan{}, err
 	}
@@ -202,6 +225,141 @@ func (s *Service) normalize(input domain.PlanInput, now time.Time) (domain.Backu
 	}
 	plan.NextRunAt = next
 	return plan, nil
+}
+
+func normalizeScope(input domain.BackupScope) (domain.BackupScope, error) {
+	mode := strings.ToUpper(strings.TrimSpace(input.Mode))
+	if mode == "" {
+		mode = "FULL"
+	}
+	if mode != "FULL" && mode != "CORE" && mode != "CUSTOM" {
+		return domain.BackupScope{}, errors.New("invalid scope mode")
+	}
+	result := domain.BackupScope{Mode: mode, Revision: input.Revision}
+	if result.Revision < 1 {
+		result.Revision = 1
+	}
+	if mode == "FULL" {
+		result.Summary = "全部支持数据"
+		return result, nil
+	}
+	clean := func(values []string) ([]string, error) {
+		seen := map[string]bool{}
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			value = strings.Trim(strings.ReplaceAll(value, "\\", "/"), "/ ")
+			if value == "" || strings.HasPrefix(value, "../") || value == ".." || strings.Contains(value, "/../") {
+				return nil, errors.New("unsafe path")
+			}
+			if !seen[value] {
+				seen[value] = true
+				out = append(out, value)
+			}
+		}
+		if len(out) > 500 {
+			return nil, errors.New("too many paths")
+		}
+		return out, nil
+	}
+	var err error
+	if result.Directories, err = clean(input.Directories); err != nil {
+		return domain.BackupScope{}, err
+	}
+	if result.Files, err = clean(input.Files); err != nil {
+		return domain.BackupScope{}, err
+	}
+	for _, file := range result.Files {
+		lower := strings.ToLower(file)
+		if strings.HasSuffix(lower, "-wal") || strings.HasSuffix(lower, "-shm") || strings.HasSuffix(lower, "-journal") {
+			return domain.BackupScope{}, errors.New("sqlite companion files cannot be selected")
+		}
+	}
+	result.Directories = removeCoveredDirectories(result.Directories)
+	result.Files = removeFilesCoveredByDirectories(result.Files, result.Directories)
+	if mode == "CUSTOM" && len(result.Directories)+len(result.Files) == 0 {
+		return domain.BackupScope{}, errors.New("empty scope")
+	}
+	if mode == "CORE" {
+		result.Summary = "Notus 核心 SQLite 档案"
+	} else {
+		result.Summary = fmt.Sprintf("%d 个目录，%d 个文件", len(result.Directories), len(result.Files))
+	}
+	return result, nil
+}
+
+func removeCoveredDirectories(values []string) []string {
+	sort.SliceStable(values, func(i, j int) bool {
+		if len(values[i]) == len(values[j]) {
+			return values[i] < values[j]
+		}
+		return len(values[i]) < len(values[j])
+	})
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		covered := false
+		for _, parent := range result {
+			if strings.HasPrefix(value, parent+"/") {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func removeFilesCoveredByDirectories(files, directories []string) []string {
+	result := make([]string, 0, len(files))
+	for _, file := range files {
+		covered := false
+		for _, directory := range directories {
+			if strings.HasPrefix(file, directory+"/") {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			result = append(result, file)
+		}
+	}
+	return result
+}
+
+func applyScopeRevisions(plan *domain.BackupPlan, current domain.BackupPlan) bool {
+	previous := map[string]domain.BackupScope{}
+	for _, target := range current.Targets {
+		previous[target.DeployID] = target.Scope
+	}
+	changed := false
+	for index := range plan.Targets {
+		next := &plan.Targets[index].Scope
+		old, exists := previous[plan.Targets[index].DeployID]
+		if !exists || old.Mode != next.Mode || !samePaths(old.Directories, next.Directories) || !samePaths(old.Files, next.Files) {
+			if exists {
+				next.Revision = old.Revision + 1
+			} else {
+				next.Revision = 1
+			}
+			changed = true
+			continue
+		}
+		next.Revision = old.Revision
+	}
+	return changed || len(plan.Targets) != len(current.Targets)
+}
+
+func samePaths(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) validateTargets(ctx context.Context, plan domain.BackupPlan) error {
@@ -217,6 +375,9 @@ func (s *Service) validateTargets(ctx context.Context, plan domain.BackupPlan) e
 		}
 		if instance.CapabilityStatus != "BACKUPABLE" && instance.CapabilityStatus != "BACKUPABLE_SHARED_WARNING" {
 			return &ValidationError{Code: "INSTANCE_NOT_BACKUPABLE"}
+		}
+		if target.Scope.Mode == "CORE" && instance.AppID != "cloud.lazycat.notus" {
+			return &ValidationError{Code: "CORE_SCOPE_PROFILE_UNAVAILABLE"}
 		}
 	}
 	return nil
@@ -248,14 +409,18 @@ func nextRun(plan domain.BackupPlan, after time.Time) (*time.Time, error) {
 	return &next, nil
 }
 
-func cronExpression(kind, value string) (string, error) {
+func cronExpression(kind, executionTime, value string) (string, error) {
+	clock, err := time.Parse("15:04", executionTime)
+	if err != nil {
+		return "", &ValidationError{Code: "INVALID_EXECUTION_TIME"}
+	}
 	switch kind {
 	case "HOURLY":
 		return "0 * * * *", nil
 	case "DAILY":
-		return "0 2 * * *", nil
+		return fmt.Sprintf("%d %d * * *", clock.Minute(), clock.Hour()), nil
 	case "WEEKLY":
-		return "0 2 * * 1", nil
+		return fmt.Sprintf("%d %d * * 1", clock.Minute(), clock.Hour()), nil
 	case "CRON":
 		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 		if _, err := parser.Parse(value); err != nil {

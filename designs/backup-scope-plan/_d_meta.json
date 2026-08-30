@@ -1,0 +1,21 @@
+{
+  "name": "backup-scope-plan",
+  "designSystems": [],
+  "source": "designs/index.html",
+  "notes": "V2 selective backup plan prototype; reuses the self-contained Lazycat icon asset.",
+  "type": "design",
+  "primaryDesignSystem": null,
+  "assets": {
+    "index": {
+      "versions": [
+        {
+          "path": "index.html",
+          "createdAt": "2026-08-29T03:00:44.989Z",
+          "status": "needs-review"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-08-29T03:00:44.991Z",
+  "updatedAt": "2026-08-29T04:50:27.800Z"
+}

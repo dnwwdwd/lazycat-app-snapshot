@@ -58,6 +58,12 @@ func Code(err error) string {
 	return "BACKUP_FAILED"
 }
 
+// ScopeValidation exposes a safe, structured range failure to the scheduler.
+func ScopeValidation(err error) (*probe.ScopeValidationError, bool) {
+	var value *probe.ScopeValidationError
+	return value, errors.As(err, &value)
+}
+
 type Config struct {
 	TenantUID      string
 	DocumentRoot   string
@@ -131,7 +137,7 @@ func New(store *persistence.Store, resolver source.Resolver, config Config) (*Se
 }
 
 func (s *Service) StartManual(ctx context.Context, deployID string, sharedRiskAccepted bool, subject string, role domain.Role) (domain.BackupJob, error) {
-	job, err := s.CreateJob(ctx, deployID, sharedRiskAccepted, subject, role, "", "", "", "manual", time.Now().UTC())
+	job, err := s.CreateJob(ctx, deployID, sharedRiskAccepted, subject, role, "", "", "", "manual", time.Now().UTC(), domain.BackupScope{Mode: "FULL", Revision: 1})
 	if err != nil || s.managedByQueue {
 		return job, err
 	}
@@ -146,7 +152,7 @@ func (s *Service) StartManual(ctx context.Context, deployID string, sharedRiskAc
 
 // CreateJob persists a validated backup job without assigning it to an in-memory
 // worker. The phase-4 queue owns execution when ManagedByQueue is enabled.
-func (s *Service) CreateJob(ctx context.Context, deployID string, sharedRiskAccepted bool, subject string, role domain.Role, planID, batchID, taskID, triggerType string, scheduledAt time.Time) (domain.BackupJob, error) {
+func (s *Service) CreateJob(ctx context.Context, deployID string, sharedRiskAccepted bool, subject string, role domain.Role, planID, batchID, taskID, triggerType string, scheduledAt time.Time, scope domain.BackupScope) (domain.BackupJob, error) {
 	instance, err := s.store.Instance(ctx, s.tenantUID, deployID)
 	if err != nil {
 		return domain.BackupJob{}, err
@@ -163,7 +169,7 @@ func (s *Service) CreateJob(ctx context.Context, deployID string, sharedRiskAcce
 		AppID: instance.AppID, ApplicationName: instance.Name, ApplicationVersion: instance.Version,
 		DeployID: instance.DeployID, MultiInstance: instance.MultiInstance, SharedRiskAccepted: sharedRiskAccepted,
 		Status: "QUEUED", CreatedAt: time.Now().UTC(), PlanID: planID, BatchID: batchID, TaskID: taskID,
-		TriggerType: triggerType, ScheduledAt: &scheduledAt,
+		TriggerType: triggerType, ScheduledAt: &scheduledAt, Scope: scope,
 	}
 	if err := s.store.CreateBackupJob(ctx, job); err != nil {
 		return domain.BackupJob{}, err
@@ -175,12 +181,66 @@ func (s *Service) Job(ctx context.Context, id string) (domain.BackupJob, error) 
 	return s.store.BackupJob(ctx, s.tenantUID, id)
 }
 
+// ScopeCatalog derives picker metadata from the same server-side resolver used
+// by the archive engine. It never exposes a source absolute path.
+func (s *Service) ScopeCatalog(ctx context.Context, deployID, query string, limit int) (domain.BackupScopeCatalog, error) {
+	instance, err := s.store.Instance(ctx, s.tenantUID, deployID)
+	if err != nil {
+		return domain.BackupScopeCatalog{}, err
+	}
+	resolved, err := s.resolver.Resolve(source.Request{TenantUID: s.tenantUID, OwnerUID: s.tenantUID, AppID: instance.AppID, DeployID: instance.DeployID})
+	if err != nil {
+		return domain.BackupScopeCatalog{}, err
+	}
+	return probe.ScopeCatalog(ctx, resolved, instance.MultiInstance, query, limit)
+}
+
+// ValidateScope resolves and scans the current tenant's source before a plan
+// is expanded. It is deliberately read-only and does not create a job.
+func (s *Service) ValidateScope(ctx context.Context, deployID string, scope domain.BackupScope) error {
+	if scope.Mode == "" || scope.Mode == "FULL" {
+		return nil
+	}
+	instance, err := s.store.Instance(ctx, s.tenantUID, deployID)
+	if err != nil {
+		return err
+	}
+	resolved, err := s.resolver.Resolve(source.Request{TenantUID: s.tenantUID, OwnerUID: s.tenantUID, AppID: instance.AppID, DeployID: instance.DeployID})
+	if err != nil {
+		return err
+	}
+	plan, err := probe.BuildPlan(ctx, resolved, instance.MultiInstance)
+	if err != nil {
+		return err
+	}
+	_, err = probe.ApplyScope(plan, scope)
+	return err
+}
+
 func (s *Service) Snapshots(ctx context.Context, limit int) ([]domain.Snapshot, error) {
-	return s.store.ListSnapshots(ctx, s.tenantUID, limit)
+	items, err := s.store.ListSnapshots(ctx, s.tenantUID, limit)
+	if err != nil {
+		return nil, err
+	}
+	for index := range items {
+		items[index] = s.withStorageStatus(items[index])
+	}
+	return items, nil
 }
 
 func (s *Service) Snapshot(ctx context.Context, id string) (domain.Snapshot, error) {
-	return s.store.Snapshot(ctx, s.tenantUID, id)
+	item, err := s.store.Snapshot(ctx, s.tenantUID, id)
+	if err != nil {
+		return domain.Snapshot{}, err
+	}
+	return s.withStorageStatus(item), nil
+}
+
+func (s *Service) withStorageStatus(item domain.Snapshot) domain.Snapshot {
+	if s.storage != nil {
+		item.StorageStatus = s.storage.LocationStatus(storage.Location{Directory: item.StoragePath})
+	}
+	return item
 }
 
 func (s *Service) Verify(ctx context.Context, id string) (domain.Snapshot, error) {
@@ -241,6 +301,12 @@ func (s *Service) execute(ctx context.Context, job domain.BackupJob) error {
 	if err != nil {
 		return &Error{Code: "BACKUP_PRECHECK_FAILED", Err: err}
 	}
+	if job.Scope.Mode != "" && job.Scope.Mode != "FULL" {
+		plan, err = probe.ApplyScope(plan, job.Scope)
+		if err != nil {
+			return &Error{Code: "BACKUP_SCOPE_PATH_MISSING", Err: err}
+		}
+	}
 	switch plan.Result.CapabilityStatus {
 	case "NO_DATA":
 		return &Error{Code: "NO_APPLICATION_DATA", Err: errors.New("source has no backupable data")}
@@ -271,6 +337,7 @@ func (s *Service) execute(ctx context.Context, job domain.BackupJob) error {
 		SourceReadOnlyMode: resolved.ReadOnlyMode, ArchiveName: "snapshot.zip", OriginalBytes: archiveSourceBytes(plan),
 		FileCount: plan.ArchiveFileCount(), DirectoryCount: len(plan.Directories), SQLiteCount: len(plan.SQLite),
 		SkippedCount: plan.Result.SkippedCount, WarningCount: len(plan.Warnings), Consistency: consistency(plan),
+		Scope: job.Scope,
 	}
 	if err := s.writeWithRetry(ctx, partial, cacheDirectory, plan, base); err != nil {
 		return err
@@ -282,7 +349,11 @@ func (s *Service) execute(ctx context.Context, job domain.BackupJob) error {
 	if err != nil {
 		return &Error{Code: "ARCHIVE_DIGEST_FAILED", Err: err}
 	}
-	location, err := s.storage.CommitArchive(partial, capturedAt.Format("20060102T150405.000Z"), job.DeployID, shortID(job.ID))
+	settings, err := s.store.Settings(ctx, s.tenantUID)
+	if err != nil {
+		return &Error{Code: "SETTINGS_LOOKUP_FAILED", Err: err}
+	}
+	location, err := s.storage.CommitArchive(partial, storageTimestamp(capturedAt, settings.Timezone), job.DeployID, shortID(job.ID))
 	if err != nil {
 		return &Error{Code: "STORAGE_COMMIT_FAILED", Err: err}
 	}
@@ -314,6 +385,7 @@ func (s *Service) execute(ctx context.Context, job domain.BackupJob) error {
 		SQLiteCount: base.SQLiteCount, SkippedCount: base.SkippedCount, WarningCount: base.WarningCount,
 		CapturedAt: capturedAt, FinishedAt: finishedAt, VerificationStatus: "VERIFIED", VerifiedAt: &verifiedAt,
 		PlanID: job.PlanID, BatchID: job.BatchID, TaskID: job.TaskID, TriggerType: job.TriggerType, RetentionStatus: "ACTIVE",
+		Scope: job.Scope,
 	}
 	if err := s.store.CommitSnapshot(ctx, snapshot); err != nil {
 		return &Error{Code: "CONTROL_DATABASE_WRITE_FAILED", Err: err}
@@ -338,39 +410,40 @@ func (s *Service) writeWithRetry(ctx context.Context, partial storage.Partial, c
 }
 
 type manifest struct {
-	FormatVersion         string    `json:"format_version"`
-	ProductVersion        string    `json:"product_version"`
-	Status                string    `json:"status"`
-	TenantUID             string    `json:"tenant_uid"`
-	OIDCSubject           string    `json:"oidc_subject"`
-	UserRole              string    `json:"user_role"`
-	AppID                 string    `json:"appid"`
-	ApplicationName       string    `json:"application_name"`
-	ApplicationVersion    string    `json:"application_version"`
-	DeployID              string    `json:"deploy_id"`
-	MultiInstance         bool      `json:"multi_instance"`
-	SharedInstanceWarning bool      `json:"shared_instance_warning"`
-	JobID                 string    `json:"job_id"`
-	TriggerType           string    `json:"trigger_type"`
-	ScheduledAt           time.Time `json:"scheduled_at"`
-	StartedAt             time.Time `json:"started_at"`
-	CapturedAt            time.Time `json:"captured_at"`
-	FinishedAt            time.Time `json:"finished_at,omitempty"`
-	SourceProvider        string    `json:"source_provider"`
-	SourceProviderVersion string    `json:"source_provider_version"`
-	SourceReadOnlyMode    string    `json:"source_readonly_mode"`
-	StoragePath           string    `json:"storage_path,omitempty"`
-	ArchiveName           string    `json:"archive_name"`
-	ArchiveSize           int64     `json:"archive_size"`
-	ArchiveSHA256         string    `json:"archive_sha256"`
-	FileCount             int       `json:"file_count"`
-	DirectoryCount        int       `json:"directory_count"`
-	SQLiteCount           int       `json:"sqlite_count"`
-	SkippedCount          int       `json:"skipped_count"`
-	WarningCount          int       `json:"warning_count"`
-	OriginalBytes         int64     `json:"original_bytes"`
-	ZipBytes              int64     `json:"zip_bytes"`
-	Consistency           string    `json:"consistency"`
+	FormatVersion         string             `json:"format_version"`
+	ProductVersion        string             `json:"product_version"`
+	Status                string             `json:"status"`
+	TenantUID             string             `json:"tenant_uid"`
+	OIDCSubject           string             `json:"oidc_subject"`
+	UserRole              string             `json:"user_role"`
+	AppID                 string             `json:"appid"`
+	ApplicationName       string             `json:"application_name"`
+	ApplicationVersion    string             `json:"application_version"`
+	DeployID              string             `json:"deploy_id"`
+	MultiInstance         bool               `json:"multi_instance"`
+	SharedInstanceWarning bool               `json:"shared_instance_warning"`
+	JobID                 string             `json:"job_id"`
+	TriggerType           string             `json:"trigger_type"`
+	ScheduledAt           time.Time          `json:"scheduled_at"`
+	StartedAt             time.Time          `json:"started_at"`
+	CapturedAt            time.Time          `json:"captured_at"`
+	FinishedAt            time.Time          `json:"finished_at,omitempty"`
+	SourceProvider        string             `json:"source_provider"`
+	SourceProviderVersion string             `json:"source_provider_version"`
+	SourceReadOnlyMode    string             `json:"source_readonly_mode"`
+	StoragePath           string             `json:"storage_path,omitempty"`
+	ArchiveName           string             `json:"archive_name"`
+	ArchiveSize           int64              `json:"archive_size"`
+	ArchiveSHA256         string             `json:"archive_sha256"`
+	FileCount             int                `json:"file_count"`
+	DirectoryCount        int                `json:"directory_count"`
+	SQLiteCount           int                `json:"sqlite_count"`
+	SkippedCount          int                `json:"skipped_count"`
+	WarningCount          int                `json:"warning_count"`
+	OriginalBytes         int64              `json:"original_bytes"`
+	ZipBytes              int64              `json:"zip_bytes"`
+	Consistency           string             `json:"consistency"`
+	Scope                 domain.BackupScope `json:"scope"`
 }
 
 type indexEntry struct {
@@ -762,6 +835,18 @@ func dereferenceTime(value *time.Time, fallback time.Time) time.Time {
 		return fallback
 	}
 	return *value
+}
+
+// storageTimestamp keeps the user-visible drive hierarchy readable while
+// retaining a filesystem-safe representation of the selected IANA time zone.
+func storageTimestamp(value time.Time, timezone string) string {
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		location = time.UTC
+		timezone = "UTC"
+	}
+	zoneLabel := strings.NewReplacer("/", "-", "_", "-").Replace(timezone)
+	return value.In(location).Format("2006-01-02_15-04-05.000") + "_" + zoneLabel
 }
 
 func randomID(prefix string) (string, error) {

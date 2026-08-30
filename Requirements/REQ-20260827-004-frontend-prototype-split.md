@@ -14,7 +14,7 @@
 - `prototype/data.ts`：原型数据、导航分组和状态样例。
 - `prototype/components.tsx`：图标、状态、下拉框、侧栏、移动端导航和顶部栏。
 - `prototype/pages.tsx`：概览、应用、计划、任务、备份库、存储、告警、设置和首次向导页面。
-- `prototype/overlays.tsx`：详情抽屉、任务抽屉、快照抽屉、计划/风险/会话/备份进度弹窗。
+- `prototype/overlays.tsx`：统一详情弹窗、计划/风险/会话/备份进度弹窗。
 - `prototype/PrototypeApp.tsx`：路由状态、批量选择、备份模拟进度、Toast 和全局叠层编排。
 - `styles.css`：完整迁移原型 CSS，包括 720px 移动端断点、底部导航、表单校验反馈和间距令牌。
 - `public/assets/lzc-icon.png`：沿用原型品牌图标。

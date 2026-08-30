@@ -13,18 +13,21 @@ This index is navigation only; the linked documents remain the sources of truth.
 | Active V1 delivery requirement | `Requirements/REQ-20260827-002-v1-core-delivery.md` | V1 implementation scope and delivery gates. |
 | Decision ledger | `Decisions/LEDGER.md` | Architecture and security decisions. |
 | POC decisions | `Decisions/DEC-20260826-001-appvar-read-gate.md`, `Decisions/DEC-20260826-003-poc-selection-and-snapshot.md`, `Decisions/DEC-20260826-004-platform-application-catalog.md`, `Decisions/DEC-20260826-005-poc-single-instance-warning.md`, `Decisions/DEC-20260826-006-appvar-source-projection-blocked.md` | Records the verified no-bypass gate, select/probe/manual-snapshot loop, runtime SDK catalog boundary, shared-instance warning, and runtime source-projection boundary. |
-| Formal service decisions | `Decisions/DEC-20260827-007-formal-auth-control-api.md`, `Decisions/DEC-20260827-008-manual-zip-snapshot-boundary.md`, `Decisions/DEC-20260827-009-scheduled-queue-library-boundary.md`, `Decisions/DEC-20260827-010-operations-i18n-events-boundary.md` | OIDC/session, per-user control database, API/POC separation, ZIP snapshots, phase-4 queue/storage boundaries, and phase-5 tenant-scoped operations/i18n/events. |
+| Formal service decisions | `Decisions/DEC-20260827-007-formal-auth-control-api.md`, `Decisions/DEC-20260827-008-manual-zip-snapshot-boundary.md`, `Decisions/DEC-20260827-009-scheduled-queue-library-boundary.md`, `Decisions/DEC-20260827-010-operations-i18n-events-boundary.md`, `Decisions/DEC-20260828-011-storage-directory-name.md` | OIDC/session, per-user control database, API/POC separation, ZIP snapshots, queue/storage boundaries, tenant-scoped operations, and product-owned backup-directory naming. |
 | Feature-progress ledger | `Progress/LEDGER.md` | Links to feature progress records. |
 | Project total progress | `Progress/PROJECT_PROGRESS.md` | Current milestone, completed POC, V1 roadmap, and release gates. |
 | Completed POC progress | `Progress/PROG-REQ-20260826-001-appvar-read-poc.md` | POC stage and evidence summary. |
 | Active V1 delivery progress | `Progress/PROG-REQ-20260827-002-v1-core-delivery.md` | V1 work stages, current action, and verification plan. |
 | Prototype UI source | `lazycat_app_backup_backup.tsx` | Source prototype retained unchanged. |
 | Split frontend | `apps/web/src/prototype/` | Mechanical translation of the V1 prototype into `data.ts`, `components.tsx`, `pages.tsx`, `overlays.tsx`, and `PrototypeApp.tsx`; Vite entry remains `apps/web/src/main.tsx`. |
-| POC diagnostics frontend | `apps/web/src/poc/` | Development-only read-only POC page and same-origin API client; not registered in the production navigation. |
 | V1 prototype UI | `designs/index.html` | Application-first interactive high-fidelity prototype aligned to PRD; shared `Dropdown`, borderless notices, single-modal plan form validation, and brand asset in `designs/assets/lzc-icon.png`. |
+| Selective-scope V2 prototype | `designs/backup-scope-plan/index.html` | Interactive four-step plan wizard: protection type, app selection, per-app scope, then schedule confirmation. |
 | OIDC login design | `designs/OIDC 登录页.html` | High-fidelity login state aligned with the production explicit-click OIDC flow and the existing V1 visual language. |
 | Frontend split requirement | `Requirements/REQ-20260827-004-frontend-prototype-split.md` | Frontend translation and componentization scope, boundaries, and acceptance. |
 | Frontend split progress | `Progress/PROG-REQ-20260827-004-frontend-prototype-split.md` | Build/test evidence and remaining browser-runtime verification. |
+| Runtime stability and UI refinement | `Requirements/REQ-20260828-005-runtime-stability-and-ui-refinement.md`, `Progress/PROG-REQ-20260828-005-runtime-stability-and-ui-refinement.md` | SSE refresh control, backup interaction, navigation, time-zone storage and settings-page refinement. |
+| Backup-library detail and table polish | `Requirements/REQ-20260828-006-backup-library-detail-and-table-polish.md`, `Progress/PROG-REQ-20260828-006-backup-library-detail-and-table-polish.md` | Unified centered detail modal with task/snapshot switching, deleted cloud-directory state, catch-up switch and readable table headers. |
+| Selective backup scope | `Requirements/REQ-20260829-007-selective-backup-scope.md`, `Progress/PROG-REQ-20260829-007-selective-backup-scope.md`, `Decisions/DEC-20260829-012-selective-scope-and-plan-pause.md` | Per-target complete/core/custom range, pre-run validation, plan pause and V2 scope-plan prototype. |
 | Legacy frontend controller | `apps/web/src/hooks/useAppController.tsx` | Earlier prototype controller retained outside the formal V1 entry; it is not the production data path. |
 | Formal V1 server | `apps/server/cmd/server/` | Go entry point for OIDC, control database, application synchronization, API and static Vite hosting. |
 | Formal server modules | `apps/server/internal/` | Auth, tenant identity, persistence, SDK catalog, fixed source resolver, probe, synchronization, backup, queue, storage, operations and HTTP API modules. |
@@ -32,9 +35,7 @@ This index is navigation only; the linked documents remain the sources of truth.
 | Manual snapshot engine | `apps/server/internal/backup/`, `apps/server/internal/storage/` | Bounded manual backup worker, SQLite Online Backup, ZIP/manifest generation, verification and document-root confinement. |
 | Scheduled queue and library | `apps/server/internal/plans/`, `apps/server/internal/scheduler/`, `apps/server/internal/queue/`, `apps/server/internal/snapshots/` | Current-tenant plan CRUD, Cron/catch-up, persistent task leases/retries and backup-library maintenance. |
 | OpenAPI contract | `api/openapi/openapi.yaml` | OpenAPI 3.1 source for all formal V1 APIs; Vite generates `apps/web/src/api/schema.d.ts` from it. |
-| Frontend application shell | `apps/web/src/prototype/PrototypeApp.tsx` | Composition root for the eight formal routes, drawers, dialogs, live API data and SSE-triggered refresh. |
+| Frontend application shell | `apps/web/src/prototype/PrototypeApp.tsx` | Composition root for the eight formal routes, unified detail modal, dialogs, live API data and SSE-triggered refresh. |
 | Shell layout components | `apps/web/src/prototype/components.tsx` | Mechanical extractions for `Sidebar`, `MobileNavigation`, `Topbar`, `Icon`, status pills and shared controls. |
-| POC server | `apps/server/cmd/poc/` | Read-only runtime diagnostic harness and its unit tests. |
 | LPK configuration | `package.yml`, `lzc-manifest.yml`, `lzc-build.yml` | Formal V1 LPK V2 build inputs. |
-| POC package build | `lzc-manifest.poc.yml`, `lzc-build.poc.yml`, `lzc/build-poc-package.sh` | Separate read-only diagnostic package used by the POC runbook. |
 | POC runbook | `docs/APPVAR_READ_POC_RUNBOOK.md` | Completed two-user validation record; reuse after platform or permission changes. |

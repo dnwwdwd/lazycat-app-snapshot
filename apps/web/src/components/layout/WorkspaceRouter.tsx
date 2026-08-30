@@ -4,7 +4,6 @@ import { BackupLibraryView } from '../../features/backups/BackupLibraryView';
 import { OverviewView } from '../../features/overview/OverviewView';
 import { PlansView } from '../../features/plans/PlansView';
 import { SettingsView } from '../../features/settings/SettingsView';
-import { SetupWizardView } from '../../features/setup/SetupWizardView';
 import { StorageView } from '../../features/storage/StorageView';
 import { TasksView } from '../../features/tasks/TasksView';
 
@@ -23,7 +22,6 @@ export function WorkspaceRouter({ currentRoute, t, stats, navigateTo, triggerMan
       {currentRoute === 'storage' && <StorageView t={t} snapshots={snapshots} />}
       {currentRoute === 'alerts' && <AlertsView t={t} alerts={alerts} setAlerts={setAlerts} navigateTo={navigateTo} />}
       {currentRoute === 'settings' && <SettingsView t={t} storageStats={storageStats} setStorageStats={setStorageStats} storageColorInfo={storageColorInfo} />}
-      {currentRoute === 'setup' && <SetupWizardView t={t} onComplete={() => navigateTo('overview')} />}
     </main>
   );
 }

@@ -75,19 +75,6 @@ func (s *Server) updatePlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, plan)
 }
 
-func (s *Server) deletePlan(w http.ResponseWriter, r *http.Request) {
-	if s.plans == nil {
-		phase4Unavailable(w, r)
-		return
-	}
-	if err := s.plans.Delete(r.Context(), chi.URLParam(r, "planID")); err != nil {
-		phase4Error(w, r, err)
-		return
-	}
-	s.auditRequest(r, "plan.deleted", "plan", chi.URLParam(r, "planID"))
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (s *Server) runPlan(w http.ResponseWriter, r *http.Request) {
 	if s.plans == nil {
 		phase4Unavailable(w, r)
@@ -245,23 +232,6 @@ func (s *Server) exportSnapshot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "exportPath": location})
 }
 
-func (s *Server) deleteSnapshot(w http.ResponseWriter, r *http.Request) {
-	if s.snapshots == nil {
-		phase4Unavailable(w, r)
-		return
-	}
-	item, err := s.snapshots.Delete(r.Context(), chi.URLParam(r, "snapshotID"))
-	if err != nil {
-		phase4Error(w, r, err)
-		return
-	}
-	s.auditRequest(r, "snapshot.trashed", "snapshot", item.ID)
-	if s.operations != nil {
-		_ = s.operations.Publish(r.Context(), "snapshot.updated", map[string]string{"snapshotId": item.ID, "status": item.Status})
-	}
-	writeJSON(w, http.StatusOK, item)
-}
-
 func (s *Server) storageSummary(w http.ResponseWriter, r *http.Request) {
 	if s.snapshots == nil {
 		phase4Unavailable(w, r)
@@ -288,23 +258,6 @@ func (s *Server) scanStorage(w http.ResponseWriter, r *http.Request) {
 	s.auditRequest(r, "storage.scanned", "storage", "current")
 	if s.operations != nil {
 		_ = s.operations.Publish(r.Context(), "storage.updated", map[string]string{"action": "scan"})
-	}
-	writeJSON(w, http.StatusOK, value)
-}
-
-func (s *Server) cleanupStorage(w http.ResponseWriter, r *http.Request) {
-	if s.snapshots == nil {
-		phase4Unavailable(w, r)
-		return
-	}
-	value, err := s.snapshots.Cleanup(r.Context())
-	if err != nil {
-		phase4Error(w, r, err)
-		return
-	}
-	s.auditRequest(r, "storage.cleaned", "storage", "current")
-	if s.operations != nil {
-		_ = s.operations.Publish(r.Context(), "storage.updated", map[string]string{"action": "cleanup"})
 	}
 	writeJSON(w, http.StatusOK, value)
 }

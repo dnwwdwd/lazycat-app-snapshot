@@ -25,9 +25,9 @@ func (s *Store) CreatePlan(ctx context.Context, plan domain.BackupPlan) error {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO backup_plans(id, tenant_uid, name, target_kind, shared_risk_accepted, schedule_type, cron_expression, timezone, enabled, catch_up, max_catch_up_seconds, max_retries, retry_backoff_seconds, retention_json, created_by_subject, created_at, updated_at, last_scheduled_at, next_run_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		plan.ID, plan.TenantUID, plan.Name, plan.TargetKind, boolInt(plan.SharedRiskAccepted), plan.ScheduleType, plan.CronExpression, plan.Timezone, boolInt(plan.Enabled), boolInt(plan.CatchUp), plan.MaxCatchUpSeconds, plan.Retry.MaxRetries, plan.Retry.BackoffSeconds, string(retention), plan.CreatedBySubject, unix(plan.CreatedAt), unix(plan.UpdatedAt), nullableUnix(plan.LastScheduledAt), nullableUnix(plan.NextRunAt))
+	_, err = tx.ExecContext(ctx, `INSERT INTO backup_plans(id, tenant_uid, name, target_kind, shared_risk_accepted, schedule_type, execution_time, cron_expression, timezone, enabled, catch_up, max_catch_up_seconds, max_retries, retry_backoff_seconds, retention_json, created_by_subject, created_at, updated_at, last_scheduled_at, next_run_at, pause_reason_json)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		plan.ID, plan.TenantUID, plan.Name, plan.TargetKind, boolInt(plan.SharedRiskAccepted), plan.ScheduleType, plan.ExecutionTime, plan.CronExpression, plan.Timezone, boolInt(plan.Enabled), boolInt(plan.CatchUp), plan.MaxCatchUpSeconds, plan.Retry.MaxRetries, plan.Retry.BackoffSeconds, string(retention), plan.CreatedBySubject, unix(plan.CreatedAt), unix(plan.UpdatedAt), nullableUnix(plan.LastScheduledAt), nullableUnix(plan.NextRunAt), "")
 	if err != nil {
 		return err
 	}
@@ -37,7 +37,7 @@ func (s *Store) CreatePlan(ctx context.Context, plan domain.BackupPlan) error {
 	return tx.Commit()
 }
 
-func (s *Store) UpdatePlan(ctx context.Context, tenant string, plan domain.BackupPlan) error {
+func (s *Store) UpdatePlan(ctx context.Context, tenant string, plan domain.BackupPlan, cancelQueued bool) error {
 	if tenant == "" || plan.ID == "" || plan.TenantUID != tenant {
 		return errors.New("invalid backup plan update")
 	}
@@ -50,8 +50,8 @@ func (s *Store) UpdatePlan(ctx context.Context, tenant string, plan domain.Backu
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE backup_plans SET name=?, target_kind=?, shared_risk_accepted=?, schedule_type=?, cron_expression=?, timezone=?, enabled=?, catch_up=?, max_catch_up_seconds=?, max_retries=?, retry_backoff_seconds=?, retention_json=?, updated_at=?, next_run_at=? WHERE tenant_uid=? AND id=?`,
-		plan.Name, plan.TargetKind, boolInt(plan.SharedRiskAccepted), plan.ScheduleType, plan.CronExpression, plan.Timezone, boolInt(plan.Enabled), boolInt(plan.CatchUp), plan.MaxCatchUpSeconds, plan.Retry.MaxRetries, plan.Retry.BackoffSeconds, string(retention), unix(plan.UpdatedAt), nullableUnix(plan.NextRunAt), tenant, plan.ID)
+	result, err := tx.ExecContext(ctx, `UPDATE backup_plans SET name=?, target_kind=?, shared_risk_accepted=?, schedule_type=?, execution_time=?, cron_expression=?, timezone=?, enabled=?, catch_up=?, max_catch_up_seconds=?, max_retries=?, retry_backoff_seconds=?, retention_json=?, updated_at=?, next_run_at=?, pause_reason_json='' WHERE tenant_uid=? AND id=?`,
+		plan.Name, plan.TargetKind, boolInt(plan.SharedRiskAccepted), plan.ScheduleType, plan.ExecutionTime, plan.CronExpression, plan.Timezone, boolInt(plan.Enabled), boolInt(plan.CatchUp), plan.MaxCatchUpSeconds, plan.Retry.MaxRetries, plan.Retry.BackoffSeconds, string(retention), unix(plan.UpdatedAt), nullableUnix(plan.NextRunAt), tenant, plan.ID)
 	if err != nil {
 		return err
 	}
@@ -61,6 +61,14 @@ func (s *Store) UpdatePlan(ctx context.Context, tenant string, plan domain.Backu
 	}
 	if changed != 1 {
 		return domain.ErrNotFound
+	}
+	if cancelQueued {
+		if _, err := tx.ExecContext(ctx, "UPDATE backup_tasks SET status='CANCELLED', error_code='SCOPE_REVISION_SUPERSEDED', finished_at=? WHERE tenant_uid=? AND plan_id=? AND status='QUEUED'", unix(plan.UpdatedAt), tenant, plan.ID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE backup_jobs SET status='FAILED', error_code='SCOPE_REVISION_SUPERSEDED', finished_at=? WHERE tenant_uid=? AND plan_id=? AND status='QUEUED'", unix(plan.UpdatedAt), tenant, plan.ID); err != nil {
+			return err
+		}
 	}
 	if err := replacePlanTargets(ctx, tx, plan); err != nil {
 		return err
@@ -76,7 +84,11 @@ func replacePlanTargets(ctx context.Context, tx *sql.Tx, plan domain.BackupPlan)
 		if target.DeployID == "" {
 			return errors.New("plan target is required")
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO plan_targets(plan_id, tenant_uid, deploy_id, shared_risk_accepted) VALUES(?, ?, ?, ?)", plan.ID, plan.TenantUID, target.DeployID, boolInt(target.SharedRiskAccepted)); err != nil {
+		scope, err := json.Marshal(target.Scope)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO plan_targets(plan_id, tenant_uid, deploy_id, shared_risk_accepted, scope_json) VALUES(?, ?, ?, ?, ?)", plan.ID, plan.TenantUID, target.DeployID, boolInt(target.SharedRiskAccepted), string(scope)); err != nil {
 			return err
 		}
 	}
@@ -84,7 +96,7 @@ func replacePlanTargets(ctx context.Context, tx *sql.Tx, plan domain.BackupPlan)
 }
 
 func (s *Store) Plans(ctx context.Context, tenant string) ([]domain.BackupPlan, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_uid, name, target_kind, shared_risk_accepted, schedule_type, cron_expression, timezone, enabled, catch_up, max_catch_up_seconds, max_retries, retry_backoff_seconds, retention_json, created_by_subject, created_at, updated_at, last_scheduled_at, next_run_at FROM backup_plans WHERE tenant_uid=? ORDER BY created_at DESC, id DESC`, tenant)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_uid, name, target_kind, shared_risk_accepted, schedule_type, execution_time, cron_expression, timezone, enabled, catch_up, max_catch_up_seconds, max_retries, retry_backoff_seconds, retention_json, created_by_subject, created_at, updated_at, last_scheduled_at, next_run_at, pause_reason_json FROM backup_plans WHERE tenant_uid=? ORDER BY created_at DESC, id DESC`, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +126,7 @@ func (s *Store) Plans(ctx context.Context, tenant string) ([]domain.BackupPlan, 
 }
 
 func (s *Store) Plan(ctx context.Context, tenant, id string) (domain.BackupPlan, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_uid, name, target_kind, shared_risk_accepted, schedule_type, cron_expression, timezone, enabled, catch_up, max_catch_up_seconds, max_retries, retry_backoff_seconds, retention_json, created_by_subject, created_at, updated_at, last_scheduled_at, next_run_at FROM backup_plans WHERE tenant_uid=? AND id=?`, tenant, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_uid, name, target_kind, shared_risk_accepted, schedule_type, execution_time, cron_expression, timezone, enabled, catch_up, max_catch_up_seconds, max_retries, retry_backoff_seconds, retention_json, created_by_subject, created_at, updated_at, last_scheduled_at, next_run_at, pause_reason_json FROM backup_plans WHERE tenant_uid=? AND id=?`, tenant, id)
 	plan, err := scanPlan(row)
 	if err != nil {
 		return domain.BackupPlan{}, err
@@ -124,7 +136,7 @@ func (s *Store) Plan(ctx context.Context, tenant, id string) (domain.BackupPlan,
 }
 
 func (s *Store) PlanTargets(ctx context.Context, tenant, id string) ([]domain.PlanTarget, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT deploy_id, shared_risk_accepted FROM plan_targets WHERE tenant_uid=? AND plan_id=? ORDER BY deploy_id", tenant, id)
+	rows, err := s.db.QueryContext(ctx, "SELECT deploy_id, shared_risk_accepted, scope_json FROM plan_targets WHERE tenant_uid=? AND plan_id=? ORDER BY deploy_id", tenant, id)
 	if err != nil {
 		return nil, err
 	}
@@ -133,10 +145,17 @@ func (s *Store) PlanTargets(ctx context.Context, tenant, id string) ([]domain.Pl
 	for rows.Next() {
 		var target domain.PlanTarget
 		var accepted int
-		if err := rows.Scan(&target.DeployID, &accepted); err != nil {
+		var scope string
+		if err := rows.Scan(&target.DeployID, &accepted, &scope); err != nil {
 			return nil, err
 		}
 		target.SharedRiskAccepted = accepted != 0
+		if err := json.Unmarshal([]byte(scope), &target.Scope); err != nil {
+			return nil, err
+		}
+		if target.Scope.Mode == "" {
+			target.Scope = domain.BackupScope{Mode: "FULL", Revision: 1}
+		}
 		targets = append(targets, target)
 	}
 	return targets, rows.Err()
@@ -172,13 +191,37 @@ func (s *Store) SetPlanEnabled(ctx context.Context, tenant, id string, enabled b
 	return nil
 }
 
+// PausePlanForScope atomically prevents future scheduled work after an
+// explicitly selected path disappears or changes type.
+func (s *Store) PausePlanForScope(ctx context.Context, tenant, id string, reason domain.PlanPauseReason) error {
+	encoded, err := json.Marshal(reason)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "UPDATE backup_plans SET enabled=0, next_run_at=NULL, pause_reason_json=?, updated_at=? WHERE tenant_uid=? AND id=?", string(encoded), unix(reason.DetectedAt), tenant, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE backup_tasks SET status='SKIPPED', error_code='PLAN_PAUSED_SCOPE_INVALID', scope_validation_json=?, finished_at=? WHERE tenant_uid=? AND plan_id=? AND status='QUEUED'", string(encoded), unix(reason.DetectedAt), tenant, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE backup_jobs SET status='FAILED', error_code='PLAN_PAUSED_SCOPE_INVALID', finished_at=? WHERE tenant_uid=? AND plan_id=? AND status='QUEUED'", unix(reason.DetectedAt), tenant, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) AdvancePlan(ctx context.Context, tenant, id string, scheduledAt time.Time, nextRun *time.Time, updated time.Time) error {
 	_, err := s.db.ExecContext(ctx, "UPDATE backup_plans SET last_scheduled_at=?, next_run_at=?, updated_at=? WHERE tenant_uid=? AND id=?", unix(scheduledAt), nullableUnix(nextRun), unix(updated), tenant, id)
 	return err
 }
 
 func (s *Store) DuePlans(ctx context.Context, tenant string, now time.Time) ([]domain.BackupPlan, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_uid, name, target_kind, shared_risk_accepted, schedule_type, cron_expression, timezone, enabled, catch_up, max_catch_up_seconds, max_retries, retry_backoff_seconds, retention_json, created_by_subject, created_at, updated_at, last_scheduled_at, next_run_at FROM backup_plans WHERE tenant_uid=? AND enabled=1 AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at, id`, tenant, unix(now))
+	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_uid, name, target_kind, shared_risk_accepted, schedule_type, execution_time, cron_expression, timezone, enabled, catch_up, max_catch_up_seconds, max_retries, retry_backoff_seconds, retention_json, created_by_subject, created_at, updated_at, last_scheduled_at, next_run_at, pause_reason_json FROM backup_plans WHERE tenant_uid=? AND enabled=1 AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at, id`, tenant, unix(now))
 	if err != nil {
 		return nil, err
 	}
@@ -228,8 +271,20 @@ func (s *Store) AddTask(ctx context.Context, task domain.BackupTask) error {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO backup_tasks(id, tenant_uid, batch_id, plan_id, backup_job_id, appid, application_name, deploy_id, multi_instance, shared_risk_accepted, trigger_type, status, priority, attempt_count, max_retries, retry_backoff_seconds, error_code, available_at, scheduled_at, created_at, started_at, finished_at, lease_token, worker_id, lease_expires_at, heartbeat_at, snapshot_id)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '', '', NULL, NULL, '')`, task.ID, task.TenantUID, task.BatchID, task.PlanID, task.BackupJobID, task.AppID, task.ApplicationName, task.DeployID, boolInt(task.MultiInstance), boolInt(task.SharedRiskAccepted), task.TriggerType, task.Status, task.Priority, task.AttemptCount, task.MaxRetries, task.RetryBackoffSeconds, task.ErrorCode, unix(task.AvailableAt), unix(task.ScheduledAt), unix(task.CreatedAt))
+	scope, err := json.Marshal(task.Scope)
+	if err != nil {
+		return err
+	}
+	validation := ""
+	if task.ScopeValidation != nil {
+		encoded, marshalErr := json.Marshal(task.ScopeValidation)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		validation = string(encoded)
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO backup_tasks(id, tenant_uid, batch_id, plan_id, backup_job_id, appid, application_name, deploy_id, multi_instance, shared_risk_accepted, trigger_type, status, priority, attempt_count, max_retries, retry_backoff_seconds, error_code, available_at, scheduled_at, created_at, started_at, finished_at, lease_token, worker_id, lease_expires_at, heartbeat_at, snapshot_id, scope_json, scope_validation_json)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '', '', NULL, NULL, '', ?, ?)`, task.ID, task.TenantUID, task.BatchID, task.PlanID, task.BackupJobID, task.AppID, task.ApplicationName, task.DeployID, boolInt(task.MultiInstance), boolInt(task.SharedRiskAccepted), task.TriggerType, task.Status, task.Priority, task.AttemptCount, task.MaxRetries, task.RetryBackoffSeconds, task.ErrorCode, unix(task.AvailableAt), unix(task.ScheduledAt), unix(task.CreatedAt), string(scope), validation)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return domain.ErrConflict
@@ -279,7 +334,7 @@ func (s *Store) Tasks(ctx context.Context, tenant string, filter domain.TaskFilt
 		conditions, args = append(conditions, "batch_id=?"), append(args, filter.BatchID)
 	}
 	args = append(args, filter.Limit)
-	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_uid, batch_id, plan_id, backup_job_id, appid, application_name, deploy_id, multi_instance, shared_risk_accepted, trigger_type, status, priority, attempt_count, max_retries, retry_backoff_seconds, error_code, available_at, scheduled_at, created_at, started_at, finished_at, lease_expires_at, heartbeat_at, snapshot_id FROM backup_tasks WHERE `+strings.Join(conditions, " AND ")+` ORDER BY created_at DESC, id DESC LIMIT ?`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_uid, batch_id, plan_id, backup_job_id, appid, application_name, deploy_id, multi_instance, shared_risk_accepted, trigger_type, status, priority, attempt_count, max_retries, retry_backoff_seconds, error_code, available_at, scheduled_at, created_at, started_at, finished_at, lease_expires_at, heartbeat_at, snapshot_id, scope_json, scope_validation_json FROM backup_tasks WHERE `+strings.Join(conditions, " AND ")+` ORDER BY created_at DESC, id DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -296,7 +351,7 @@ func (s *Store) Tasks(ctx context.Context, tenant string, filter domain.TaskFilt
 }
 
 func (s *Store) Task(ctx context.Context, tenant, id string) (domain.BackupTask, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_uid, batch_id, plan_id, backup_job_id, appid, application_name, deploy_id, multi_instance, shared_risk_accepted, trigger_type, status, priority, attempt_count, max_retries, retry_backoff_seconds, error_code, available_at, scheduled_at, created_at, started_at, finished_at, lease_expires_at, heartbeat_at, snapshot_id FROM backup_tasks WHERE tenant_uid=? AND id=?`, tenant, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_uid, batch_id, plan_id, backup_job_id, appid, application_name, deploy_id, multi_instance, shared_risk_accepted, trigger_type, status, priority, attempt_count, max_retries, retry_backoff_seconds, error_code, available_at, scheduled_at, created_at, started_at, finished_at, lease_expires_at, heartbeat_at, snapshot_id, scope_json, scope_validation_json FROM backup_tasks WHERE tenant_uid=? AND id=?`, tenant, id)
 	return scanTask(row)
 }
 
@@ -326,7 +381,7 @@ func (s *Store) ClaimNextTask(ctx context.Context, tenant, workerID, leaseToken 
 		return domain.BackupTask{}, err
 	}
 	defer tx.Rollback()
-	row := tx.QueryRowContext(ctx, `SELECT id, tenant_uid, batch_id, plan_id, backup_job_id, appid, application_name, deploy_id, multi_instance, shared_risk_accepted, trigger_type, status, priority, attempt_count, max_retries, retry_backoff_seconds, error_code, available_at, scheduled_at, created_at, started_at, finished_at, lease_expires_at, heartbeat_at, snapshot_id FROM backup_tasks WHERE tenant_uid=? AND status='QUEUED' AND available_at<=? ORDER BY priority DESC, available_at, created_at, id LIMIT 1`, tenant, unix(now))
+	row := tx.QueryRowContext(ctx, `SELECT id, tenant_uid, batch_id, plan_id, backup_job_id, appid, application_name, deploy_id, multi_instance, shared_risk_accepted, trigger_type, status, priority, attempt_count, max_retries, retry_backoff_seconds, error_code, available_at, scheduled_at, created_at, started_at, finished_at, lease_expires_at, heartbeat_at, snapshot_id, scope_json, scope_validation_json FROM backup_tasks WHERE tenant_uid=? AND status='QUEUED' AND available_at<=? ORDER BY priority DESC, available_at, created_at, id LIMIT 1`, tenant, unix(now))
 	task, err := scanTask(row)
 	if errors.Is(err, domain.ErrNotFound) {
 		return domain.BackupTask{}, domain.ErrNotFound
@@ -372,6 +427,15 @@ func (s *Store) SetTaskStatus(ctx context.Context, tenant, id, token, status str
 		return domain.ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) SetTaskScopeValidation(ctx context.Context, tenant, id, token string, value domain.PlanPauseReason) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, "UPDATE backup_tasks SET scope_validation_json=? WHERE tenant_uid=? AND id=? AND lease_token=?", string(encoded), tenant, id, token)
+	return err
 }
 
 func (s *Store) HeartbeatTask(ctx context.Context, tenant, id, token string, now, expires time.Time) error {
@@ -616,7 +680,8 @@ func scanPlan(row scanner) (domain.BackupPlan, error) {
 	var retention string
 	var created, updated int64
 	var last, next sql.NullInt64
-	err := row.Scan(&plan.ID, &plan.TenantUID, &plan.Name, &plan.TargetKind, &shared, &plan.ScheduleType, &plan.CronExpression, &plan.Timezone, &enabled, &catchUp, &plan.MaxCatchUpSeconds, &plan.Retry.MaxRetries, &plan.Retry.BackoffSeconds, &retention, &plan.CreatedBySubject, &created, &updated, &last, &next)
+	var pause string
+	err := row.Scan(&plan.ID, &plan.TenantUID, &plan.Name, &plan.TargetKind, &shared, &plan.ScheduleType, &plan.ExecutionTime, &plan.CronExpression, &plan.Timezone, &enabled, &catchUp, &plan.MaxCatchUpSeconds, &plan.Retry.MaxRetries, &plan.Retry.BackoffSeconds, &retention, &plan.CreatedBySubject, &created, &updated, &last, &next, &pause)
 	if errors.Is(err, sql.ErrNoRows) {
 		return plan, domain.ErrNotFound
 	}
@@ -628,6 +693,12 @@ func scanPlan(row scanner) (domain.BackupPlan, error) {
 	}
 	plan.SharedRiskAccepted, plan.Enabled, plan.CatchUp = shared != 0, enabled != 0, catchUp != 0
 	plan.CreatedAt, plan.UpdatedAt, plan.LastScheduledAt, plan.NextRunAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC(), fromUnix(last), fromUnix(next)
+	if pause != "" {
+		var reason domain.PlanPauseReason
+		if json.Unmarshal([]byte(pause), &reason) == nil {
+			plan.PauseReason = &reason
+		}
+	}
 	return plan, nil
 }
 
@@ -651,7 +722,8 @@ func scanTask(row scanner) (domain.BackupTask, error) {
 	var multi, shared int
 	var available, scheduled, created int64
 	var started, finished, lease, heartbeat sql.NullInt64
-	err := row.Scan(&task.ID, &task.TenantUID, &task.BatchID, &task.PlanID, &task.BackupJobID, &task.AppID, &task.ApplicationName, &task.DeployID, &multi, &shared, &task.TriggerType, &task.Status, &task.Priority, &task.AttemptCount, &task.MaxRetries, &task.RetryBackoffSeconds, &task.ErrorCode, &available, &scheduled, &created, &started, &finished, &lease, &heartbeat, &task.SnapshotID)
+	var scope, validation string
+	err := row.Scan(&task.ID, &task.TenantUID, &task.BatchID, &task.PlanID, &task.BackupJobID, &task.AppID, &task.ApplicationName, &task.DeployID, &multi, &shared, &task.TriggerType, &task.Status, &task.Priority, &task.AttemptCount, &task.MaxRetries, &task.RetryBackoffSeconds, &task.ErrorCode, &available, &scheduled, &created, &started, &finished, &lease, &heartbeat, &task.SnapshotID, &scope, &validation)
 	if errors.Is(err, sql.ErrNoRows) {
 		return task, domain.ErrNotFound
 	}
@@ -661,5 +733,12 @@ func scanTask(row scanner) (domain.BackupTask, error) {
 	task.MultiInstance, task.SharedRiskAccepted = multi != 0, shared != 0
 	task.AvailableAt, task.ScheduledAt, task.CreatedAt = time.Unix(available, 0).UTC(), time.Unix(scheduled, 0).UTC(), time.Unix(created, 0).UTC()
 	task.StartedAt, task.FinishedAt, task.LeaseExpiresAt, task.HeartbeatAt = fromUnix(started), fromUnix(finished), fromUnix(lease), fromUnix(heartbeat)
+	_ = json.Unmarshal([]byte(scope), &task.Scope)
+	if validation != "" {
+		_ = json.Unmarshal([]byte(validation), &task.ScopeValidation)
+	}
+	if task.Scope.Mode == "" {
+		task.Scope = domain.BackupScope{Mode: "FULL", Revision: 1}
+	}
 	return task, nil
 }

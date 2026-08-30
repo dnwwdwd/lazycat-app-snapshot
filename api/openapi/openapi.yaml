@@ -102,6 +102,19 @@ paths:
           description: Probe refresh accepted
           content: { application/json: { schema: { $ref: '#/components/schemas/SyncAccepted' } } }
         '404': { $ref: '#/components/responses/ResourceNotFound' }
+  /api/instances/{deployId}/backup-scope:
+    get:
+      summary: Read safe relative paths for a current-tenant selective backup plan
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DeployId'
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 200 }
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': { description: Relative metadata only, content: { application/json: { schema: { $ref: '#/components/schemas/BackupScopeCatalog' } } } }
+        '404': { $ref: '#/components/responses/ResourceNotFound' }
   /api/instances/{deployId}/backup:
     post:
       summary: Queue one bounded manual backup for a current-tenant instance
@@ -154,13 +167,6 @@ paths:
           description: Snapshot metadata
           content: { application/json: { schema: { $ref: '#/components/schemas/Snapshot' } } }
         '404': { $ref: '#/components/responses/ResourceNotFound' }
-    delete:
-      summary: Move one current-tenant snapshot to the backup-library trash
-      security: [{ sessionCookie: [] }]
-      parameters:
-        - $ref: '#/components/parameters/SnapshotId'
-      responses:
-        '200': { description: Snapshot moved to trash, content: { application/json: { schema: { $ref: '#/components/schemas/Snapshot' } } } }
   /api/backups/{snapshotId}/verify:
     post:
       summary: Perform a fast current-tenant ZIP and manifest verification
@@ -207,10 +213,6 @@ paths:
         content: { application/json: { schema: { $ref: '#/components/schemas/PlanInput' } } }
       responses:
         '200': { description: Plan updated, content: { application/json: { schema: { $ref: '#/components/schemas/BackupPlan' } } } }
-    delete:
-      security: [{ sessionCookie: [] }]
-      parameters: [{ $ref: '#/components/parameters/PlanId' }]
-      responses: { '204': { description: Plan deleted } }
   /api/plans/{planId}/run:
     post:
       security: [{ sessionCookie: [] }]
@@ -294,11 +296,6 @@ paths:
       security: [{ sessionCookie: [] }]
       responses:
         '200': { description: Library scan completed, content: { application/json: { schema: { $ref: '#/components/schemas/StorageSummary' } } } }
-  /api/storage/cleanup:
-    post:
-      security: [{ sessionCookie: [] }]
-      responses:
-        '200': { description: Expired temporary data cleanup completed, content: { application/json: { schema: { $ref: '#/components/schemas/CleanupResult' } } } }
   /api/overview:
     get:
       summary: Read the current tenant operational overview
@@ -494,6 +491,7 @@ components:
         taskId: { type: string }
         triggerType: { type: string }
         scheduledAt: { type: string, format: date-time }
+        scope: { $ref: '#/components/schemas/BackupScope' }
         createdAt: { type: string, format: date-time }
         startedAt: { type: string, format: date-time }
         finishedAt: { type: string, format: date-time }
@@ -516,7 +514,9 @@ components:
         multiInstance: { type: boolean }
         sharedInstanceWarning: { type: boolean }
         status: { type: string, enum: [COMPLETED] }
-        storagePath: { type: string, description: Safe path relative to LazycatAppBackup; never an absolute source or host path. }
+        storagePath: { type: string, description: Safe path relative to MimiAppBakcup; never an absolute source or host path. }
+        storageStatus: { type: string, enum: [AVAILABLE, MISSING, INACCESSIBLE], description: Whether the recorded cloud directory is currently reachable; detail views do not run archive verification. }
+        scope: { $ref: '#/components/schemas/BackupScope' }
         archiveName: { type: string, enum: [snapshot.zip] }
         archiveSize: { type: integer, format: int64 }
         archiveSha256: { type: string }
@@ -547,6 +547,40 @@ components:
       properties:
         deployId: { type: string }
         sharedRiskAccepted: { type: boolean, deprecated: true, description: Compatibility metadata; it does not gate plan creation. }
+        scope: { $ref: '#/components/schemas/BackupScope' }
+    BackupScope:
+      type: object
+      required: [mode, revision]
+      properties:
+        mode: { type: string, enum: [FULL, CORE, CUSTOM] }
+        directories: { type: array, items: { type: string } }
+        files: { type: array, items: { type: string } }
+        revision: { type: integer, minimum: 1 }
+        summary: { type: string, description: Server-generated readable range summary. }
+    PlanPauseReason:
+      type: object
+      required: [code, deployId, detectedAt]
+      properties:
+        code: { type: string }
+        deployId: { type: string }
+        path: { type: string }
+        expected: { type: string }
+        detectedAt: { type: string, format: date-time }
+        scopeRevision: { type: integer, minimum: 1 }
+    ScopeEntry:
+      type: object
+      required: [path, type, size, sqlite, selectable]
+      properties:
+        path: { type: string }
+        type: { type: string, enum: [directory, file] }
+        size: { type: integer, format: int64 }
+        sqlite: { type: boolean }
+        selectable: { type: boolean }
+    BackupScopeCatalog:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ScopeEntry' } }
     RetryPolicy:
       type: object
       required: [maxRetries, backoffSeconds]
@@ -568,10 +602,11 @@ components:
       required: [name, targetKind, targets, scheduleType, timezone, enabled, catchUp, maxCatchUpSeconds, retry, retention]
       properties:
         name: { type: string, maxLength: 120 }
-        targetKind: { type: string, enum: [EXPLICIT, ALL_BACKUPABLE] }
+        targetKind: { type: string, enum: [EXPLICIT] }
         targets: { type: array, items: { $ref: '#/components/schemas/PlanTarget' } }
         sharedRiskAccepted: { type: boolean, deprecated: true, description: Compatibility metadata; it does not gate plan creation. }
         scheduleType: { type: string, enum: [MANUAL, HOURLY, DAILY, WEEKLY, CRON] }
+        executionTime: { type: string, pattern: '^[0-2][0-9]:[0-5][0-9]$', default: '02:00', description: Local execution time for daily and weekly schedules. }
         cronExpression: { type: string }
         timezone: { type: string }
         enabled: { type: boolean }
@@ -587,6 +622,7 @@ components:
           properties:
             id: { type: string }
             nextRunAt: { type: string, format: date-time }
+            pauseReason: { $ref: '#/components/schemas/PlanPauseReason' }
             lastScheduledAt: { type: string, format: date-time }
             createdAt: { type: string, format: date-time }
             updatedAt: { type: string, format: date-time }
@@ -645,6 +681,8 @@ components:
         leaseExpiresAt: { type: string, format: date-time }
         heartbeatAt: { type: string, format: date-time }
         snapshotId: { type: string }
+        scope: { $ref: '#/components/schemas/BackupScope' }
+        scopeValidation: { $ref: '#/components/schemas/PlanPauseReason' }
     TaskAttempt:
       type: object
       required: [id, taskId, attempt, status, startedAt]
@@ -689,24 +727,17 @@ components:
       required: [accepted, exportPath]
       properties:
         accepted: { type: boolean, const: true }
-        exportPath: { type: string, description: Safe path relative to LazycatAppBackup. }
+        exportPath: { type: string, description: Safe path relative to MimiAppBakcup. }
     StorageSummary:
       type: object
-      required: [snapshotCount, archiveBytes, availableBytes, partialCount, trashCount, missingCount]
+      required: [snapshotCount, archiveBytes, availableBytes, partialCount, missingCount]
       properties:
         snapshotCount: { type: integer }
         archiveBytes: { type: integer, format: int64 }
         availableBytes: { type: integer, format: int64 }
         partialCount: { type: integer }
-        trashCount: { type: integer }
         missingCount: { type: integer }
         lastVerifiedAt: { type: string, format: date-time }
-    CleanupResult:
-      type: object
-      required: [partialRemoved, trashRemoved]
-      properties:
-        partialRemoved: { type: integer }
-        trashRemoved: { type: integer }
     Settings:
       type: object
       additionalProperties: false

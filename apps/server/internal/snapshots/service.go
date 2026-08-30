@@ -111,15 +111,34 @@ func (s *Service) Delete(ctx context.Context, id string) (domain.Snapshot, error
 }
 
 func (s *Service) Summary(ctx context.Context) (domain.StorageSummary, error) {
-	count, bytes, missing, verifiedAt, err := s.store.SnapshotSummary(ctx, s.tenantUID)
+	items, err := s.store.AllSnapshots(ctx, s.tenantUID)
 	if err != nil {
 		return domain.StorageSummary{}, err
+	}
+	count := 0
+	missing := 0
+	var verifiedAt *time.Time
+	for _, item := range items {
+		if item.RetentionStatus == "TRASHED" {
+			continue
+		}
+		count++
+		if s.storage.LocationStatus(storage.Location{Directory: item.StoragePath}) != "AVAILABLE" {
+			missing++
+		}
+		if item.VerifiedAt != nil && (verifiedAt == nil || item.VerifiedAt.After(*verifiedAt)) {
+			stamp := *item.VerifiedAt
+			verifiedAt = &stamp
+		}
 	}
 	usage, err := s.storage.Usage()
 	if err != nil {
 		return domain.StorageSummary{}, err
 	}
-	return domain.StorageSummary{SnapshotCount: count, ArchiveBytes: bytes, AvailableBytes: usage.AvailableBytes, PartialCount: usage.PartialCount, TrashCount: usage.TrashCount, MissingCount: missing, LastVerifiedAt: verifiedAt}, nil
+	// ArchiveBytes is measured from the current user's document directory.
+	// The control database's recorded archive_size is historical metadata and
+	// must not keep reporting bytes after a cloud file has been removed.
+	return domain.StorageSummary{SnapshotCount: count, ArchiveBytes: usage.ArchiveBytes, AvailableBytes: usage.AvailableBytes, PartialCount: usage.PartialCount, TrashCount: usage.TrashCount, MissingCount: missing, LastVerifiedAt: verifiedAt}, nil
 }
 
 // Scan verifies current control-library records against the current user's

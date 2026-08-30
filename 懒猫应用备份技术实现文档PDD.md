@@ -9,7 +9,7 @@
 > 目标平台：懒猫微服 LPK V2  
 > 登录方式：懒猫 OIDC
 > 支持语言：简体中文（zh-CN）、English（en-US）  
-> 最后更新：2026-08-27
+> 最后更新：2026-08-29
 > 说明：文档版本固定为 V1，后续调整只更新“最后更新”和变更记录。
 
 ## 1. 实现结论
@@ -579,7 +579,7 @@ snapshot.zip
 ### 11.2 最终目录
 
 ```text
-LazycatAppBackup/
+MimiAppBakcup/
 └── <scheduled_at>/
     └── <deploy_id>/
         ├── snapshot.zip
@@ -635,6 +635,8 @@ snapshot.zip
 
 ### 11.6 时间和权限
 
+快照完成时从当前 tenant 的设置读取 IANA 时区，网盘目录使用 `<yyyy-MM-dd_HH-mm-ss.SSS>_<timezone-safe>/` 作为第一层，例如 `2026-08-28_09-18-01.653_Asia-Shanghai/`。斜杠会转换为连字符，目录保持单段、安全且可读；快照 API 与 manifest 中的时间仍保存 UTC RFC 3339，由前端按同一设置时区显示。
+
 ZIP Entry 保存：
 
 - 相对路径。
@@ -663,7 +665,7 @@ ZIP Entry 保存：
 4. 处理 busy 和 locked 重试。
 5. 执行 `PRAGMA quick_check`。
 6. 将临时快照写入 ZIP 中原始相对路径。
-7. 清理临时文件。
+7. 任务结束时释放临时工作文件，不触及网盘快照目录。
 
 失败时任务失败，不回退为普通复制。
 
@@ -769,7 +771,7 @@ BACKUP_DOCUMENT_ROOT=/lzcapp/document
 产品根：
 
 ```text
-/lzcapp/document/LazycatAppBackup
+/lzcapp/document/MimiAppBakcup
 ```
 
 该目录对应当前用户自己的懒猫网盘。
@@ -784,36 +786,37 @@ BACKUP_DOCUMENT_ROOT=/lzcapp/document
 - WriteManifest。
 - Stat。
 - RemovePartial。
-- MoveToTrash。
 - FreeSpace。
 
 业务层不直接拼接宿主机路径。
 
+存储页仅在浏览器中使用既有 `StorageSummary.archiveBytes` 和 `availableBytes` 计算显示比例。原始比例大于零且小于 0.1% 时，显示为 `<0.1%` 并使用最小可见条宽；该展示规则不回写汇总数据，不改变 `FreeSpace`、存储扫描或网盘目录。
+
 ### 15.3 临时和回收站
 
 ```text
-LazycatAppBackup/
+MimiAppBakcup/
 ├── _partial/
 ├── _restore_exports/
-├── _trash/
 └── <scheduled_at>/
 ```
 
-失败任务保留短时间后清理。删除快照先进入 `_trash`，宽限期后物理删除。
+V1 不提供清理、删除、回收站或自动保留删除能力。失败任务产生的临时目录保留在 `_partial/`，由用户在网盘侧自行管理；产品只展示状态，不主动移除任何目录或文件。
 
 ### 15.4 快照索引
 
-外部 `manifest.json` 是备份库索引入口。后台定期扫描当前用户的 `LazycatAppBackup` 根目录，对账：
+外部 `manifest.json` 是备份库索引入口。后台定期扫描当前用户的 `MimiAppBakcup` 根目录，对账：
 
 - 控制库有记录、网盘文件存在。
 - 网盘有 manifest、控制库缺少记录。
 - ZIP 缺失。
 - manifest 状态异常。
 - ZIP 大小或 SHA-256 不一致。
-- `_partial` 超期。
-- `_trash` 到期。
+- `_partial` 中的临时目录状态。
 
 对账只读取当前用户网盘。
+
+快照详情先读取控制库中的快照元数据，再独立读取文件索引。快照 API 额外返回 `storageStatus`（`AVAILABLE`、`MISSING` 或 `INACCESSIBLE`）描述记录目录当前是否可达；目录缺失只标记为 `MISSING`，不把详情打开过程当作完整性校验。前端将范围、实际归档统计和创建时完整性记录合并展示，文件索引默认截取前 30 条；截取只影响展示，不改变索引读取、快照数据或接口。完整性校验和导出仍属于服务端维护边界，快照详情界面保持只读；产品不提供删除、移入回收站或清理入口。
 
 ### 15.5 快照校验
 
@@ -834,24 +837,16 @@ LazycatAppBackup/
 - 对 SQLite Entry 临时解压后执行 `quick_check`。
 - 更新快照完整性状态。
 
-### 15.6 保留策略
+### 15.6 保留与数据生命周期
 
-每次成功提交后执行：
-
-1. 读取计划保留策略。
-2. 按最近、每日、每周和每月规则选出保留集合。
-3. 至少保留一份校验通过快照。
-4. 校验失败时暂停自动删除。
-5. 待删除快照先移动到 `_trash`。
-6. 宽限期结束后物理删除。
-7. 删除结果写入活动记录和告警。
+V1 只记录快照和计划元数据，不执行任何快照删除、目录清理、回收站转移或自动保留删除。历史版本中出现的 `keepLast`、`keepDaily`、`keepWeekly`、`keepMonthly` 和 `trashGraceHours` 字段仅为控制库兼容字段，服务端不以它们触发物理文件操作；用户需要释放空间时，直接在懒猫网盘侧管理文件。
 
 ### 15.7 恢复副本导出
 
 V1 只导出到当前用户网盘：
 
 ```text
-LazycatAppBackup/_restore_exports/<export_id>/
+MimiAppBakcup/_restore_exports/<export_id>/
 ```
 
 导出流程：
@@ -878,7 +873,6 @@ LazycatAppBackup/_restore_exports/<export_id>/
 
 - 单个应用实例。
 - 多个应用实例。
-- 当前用户未来新增的可备份应用。
 
 计划不保存其他用户 UID。
 
@@ -980,7 +974,6 @@ batch_id + deploy_id
 - 普通 ZIP。
 - SQLite。
 - 校验。
-- 清理。
 
 ### 18.2 资源预算
 
@@ -1086,7 +1079,6 @@ GET    /api/plans
 POST   /api/plans
 GET    /api/plans/{id}
 PUT    /api/plans/{id}
-DELETE /api/plans/{id}
 POST   /api/plans/{id}/run
 POST   /api/plans/{id}/pause
 POST   /api/plans/{id}/resume
@@ -1111,19 +1103,17 @@ GET    /api/backups/{id}
 GET    /api/backups/{id}/files
 POST   /api/backups/{id}/verify
 POST   /api/backups/{id}/export
-DELETE /api/backups/{id}
 ```
 
 阶段 3 已实现快照列表、详情和快速校验，阶段 4 在此基础上补齐备份库维护。
 
-阶段 4 已提供文件索引、快速/完整 ZIP 校验、导出到当前用户 `_restore_exports/`、移入 `_trash/`、存储扫描和过期临时/回收站清理。保留执行按计划的最近、每日、每周和每月规则选择快照，至少留下一个已验证快照；任一快照校验失败时暂停该计划的自动删除。导出拒绝 ZIP 路径穿越和符号链接，不写入目标应用。
+阶段 4 已提供文件索引、快速/完整 ZIP 校验、导出到当前用户 `_restore_exports/` 和存储扫描。V1 不提供计划删除、快照删除、移入回收站或存储清理；导出拒绝 ZIP 路径穿越和符号链接，不写入目标应用。
 
 ### 20.6 存储、告警和设置
 
 ```text
 GET  /api/storage
 POST /api/storage/scan
-POST /api/storage/cleanup
 
 GET  /api/overview
 GET  /api/alerts
@@ -1137,7 +1127,7 @@ PUT  /api/settings
 GET  /api/audit
 ```
 
-阶段 5 的 overview 聚合当前租户的应用保护状态、计划、任务、告警、最近审计和存储摘要。设置只开放语言、时区、补跑、重试、保留、回收站宽限期和站内提醒偏好等已被执行引擎采用或可安全展示的值；接口不接受用户 UID、宿主机路径、权限声明或未接入引擎的配置。告警、设置和审计均按当前会话 tenant 过滤。
+阶段 5 的 overview 聚合当前租户的应用保护状态、计划、任务、告警、最近审计和存储摘要。设置只开放语言、时区、补跑、重试、保留兼容字段和站内提醒偏好等已被执行引擎采用或可安全展示的值；接口不接受用户 UID、宿主机路径、权限声明或未接入引擎的配置。告警、设置和审计均按当前会话 tenant 过滤。产品不提供保存按钮，设置参数修改后立即写入并提示结果。
 
 ### 20.7 实时事件
 
@@ -1147,7 +1137,7 @@ GET /api/events
 
 SSE 事件包括 `batch.updated`、`task.updated`、`snapshot.updated`、`alert.created`、`storage.updated`、`audit.created` 和 `session.expiring`。事件只携带当前租户业务对象 ID、状态和安全摘要，不携带文件正文、源绝对路径、Token、Cookie 或其他用户信息。
 
-单次连接至多持续 25 秒，并使用事件 ID 支持短时重连。服务端只读取当前 tenant 的最近事件，浏览器在事件遗漏、断线或重启后重新调用 REST 接口读取 SQLite 中的权威状态。SSE 不承担状态恢复，也不作为唯一事实来源。
+单次连接至多持续 25 秒，并使用事件 ID 支持短时重连。前端在会话建立后只维护一条订阅，不因资源刷新或会话对象重复赋值重建连接；事件在 1.2 秒窗口内合并为一次 REST 重读，断线后以 15 秒退避重新连接。服务端只读取当前 tenant 的最近事件，浏览器在事件遗漏、断线或重启后重新调用 REST 接口读取 SQLite 中的权威状态。SSE 不承担状态恢复，也不作为唯一事实来源。
 
 ## 21. 前端页面实现
 
@@ -1187,12 +1177,7 @@ Vite 前端包含：
 
 ### 21.4 POC 页面
 
-当前 POC 页面保留在开发目录或独立构建目标中：
-
-- 不出现在生产导航。
-- 不注册生产路由。
-- 不计入 PRD 验收。
-- 可在开发构建中用于投影和探测回归。
+POC 诊断页面和独立构建目标已从当前代码库移除。已完成的验证记录与回归手册继续作为平台边界证据保存，不属于正式产品页面或运行入口。
 
 ### 21.5 PRD 页面与后端映射
 
@@ -1204,8 +1189,8 @@ Vite 前端包含：
 | 应用详情 | catalog、probe、plans、queue、snapshots | application、instance、plans、tasks、backups |
 | 备份计划 | plans、scheduler、queue | plans CRUD、run、pause、resume |
 | 任务中心 | queue、operations | batches、tasks、cancel、retry、events |
-| 备份库 | snapshots、storage | backups、files、verify、export、delete |
-| 存储 | storage、snapshots、operations | storage、scan、cleanup、events |
+| 备份库 | snapshots、storage | backups、files、verify、export |
+| 存储 | storage、snapshots、operations | storage、scan、events |
 | 告警 | operations、queue | alerts、read、resolve、mute、events |
 | 设置与审计 | operations、auth、scheduler、queue、storage、i18n | session、settings、audit、events |
 
@@ -1213,15 +1198,14 @@ Vite 前端包含：
 
 ## 22. 项目目录结构
 
-以下为阶段 5 完成时的正式实现目录。POC 入口和构建目标独立保留，生产导航与正式 API 不注册 POC 诊断能力。
+以下为当前正式实现目录。POC 入口和构建目标已移除；历史验证记录仍保留在需求、决策、进度和回归手册中。
 
 ```text
 lazycat-app-snapshot/
 ├── apps/
 │   ├── server/
 │   │   ├── cmd/
-│   │   │   ├── server/
-│   │   │   └── poc/
+│   │   │   └── server/
 │   │   ├── internal/
 │   │   │   ├── auth/
 │   │   │   ├── identity/
@@ -1244,15 +1228,13 @@ lazycat-app-snapshot/
 │       └── src/
 │           ├── api/
 │           ├── i18n/
-│           ├── poc/
 │           └── prototype/
 ├── api/
 │   └── openapi/
 ├── lzc/
 ├── package.yml
 ├── lzc-manifest.yml
-├── lzc-build.yml
-└── lzc-build.poc.yml
+└── lzc-build.yml
 ```
 
 ## 23. 告警和通知
@@ -1299,7 +1281,7 @@ en-US
 - 通知。
 - 日期和容量。
 
-阶段 5 已实现八个主菜单、首次使用页、详情抽屉和设置页的 `zh-CN`、`en-US` 文案。语言切换只改变当前浏览器显示和当前租户的安全设置，不提交或展示 Token、Cookie、用户目录或源路径。
+阶段 5 已实现八个主菜单、统一详情弹窗和设置页的 `zh-CN`、`en-US` 文案。详情入口共享单一弹窗状态，任务与快照之间切换时不叠加遮罩；语言切换只改变当前浏览器显示和当前租户的安全设置，不提交或展示 Token、Cookie、用户目录或源路径。
 
 ### 24.2 后端
 
@@ -1445,10 +1427,30 @@ V1 发布前必须满足：
 - [SQLite Online Backup API](https://sqlite.org/backup.html)
 - [Go archive/zip](https://pkg.go.dev/archive/zip)
 
-## 31. 变更记录
+## 31. 选择性范围实现
+
+`PlanTarget`、`BackupJob`、`BackupTask` 和 `Snapshot` 持久化 `BackupScope`：模式、规范化目录、单文件、范围修订和服务端摘要。迁移后的旧记录默认为 `FULL`，但没有摘要，因此读取层将其标识为旧版完整备份。内外 manifest 同时写入不可变范围快照和实际归档统计；文件索引仍以 ZIP 实际内容为准。
+
+范围路径只接受当前用户已解析 appvar 根下的相对路径。服务端去重、移除父目录已覆盖的项，拒绝绝对路径、`..`、SQLite 伴随文件和后续扫描中不可选的链接、特殊文件。`GET /api/instances/{deployId}/backup-scope` 通过同一当前用户 source resolver 返回有限条安全元数据，不返回绝对路径或文件内容。
+
+计划运行前为每个目标重新解析并验证范围。任一范围错误会原子暂停计划、清空 `next_run_at`、取消未租约任务并让本批次记录具体失败路径。队列运行期间发现范围失效时复用相同暂停路径；该错误不可重试，不生成快照。范围保存变更会在同一控制库事务中取消未开始的旧修订任务。前端范围选择器只创建 `FULL` 或 `CUSTOM`；服务端继续保留 `CORE` 的历史记录读取和执行兼容，不新增核心数据判定逻辑。
+
+暂停事件经当前租户 operations 服务写入审计和站内告警。整个链路维持现有 `appvar.other.read`、当前 tenant source resolver、目标数据只读和当前用户 document-root 写入边界。
+
+## 32. 变更记录
 
 | 日期 | 文档版本 | 变更 |
 | --- | --- | --- |
+| 2026-08-29 | V1 | 存储页以既有容量汇总计算小占用显示并提供最小可见进度；页面布局重排不涉及接口、存储数据或写入权限。 |
+| 2026-08-29 | V1 | 应用、计划、批次、任务和快照详情统一使用前端单一居中弹窗，并支持任务/快照往返切换；快照详情只在视图层合并元数据并默认截取文件索引，不新增接口、权限或数据写入。 |
+| 2026-08-29 | V1 | 计划创建和编辑界面只产生 `FULL`、`CUSTOM` 范围；`CORE` 仅保留历史记录兼容，避免以目录名或应用类型猜测核心数据。 |
+| 2026-08-29 | V1 | 控制库、任务和快照引入不可变范围快照与范围暂停原因；计划运行前校验全部目标，范围失效写入当前租户审计和站内告警。 |
+| 2026-08-28 | V1 | 快照详情读取改为元数据优先，增加 `storageStatus` 目录可达状态；前端详情不触发校验、不提供导出和回收站操作；任务/批次详情与表格表头统一采用分层视觉规范。 |
+| 2026-08-28 | V1 | 当前用户网盘备份根目录改为 `MimiAppBakcup`；存储层不迁移、合并、扫描或修改旧 `LazycatAppBackup` 目录。 |
+| 2026-08-28 | V1 | 批次详情前端改用既有 `GET /api/batches/{batchId}`，移除通过批次列表和分页参数查找详情的冗余请求；未新增接口、权限或数据边界。 |
+| 2026-08-28 | V1 | SSE 客户端调整为单连接、1.2 秒事件合并和 15 秒退避重连，避免会话重复赋值导致的取消连接与全页并发刷新；网盘提交目录按当前 tenant 设置的时区生成可读时间段并写入时区标识。 |
+| 2026-08-28 | V1 | 计划目标收敛为显式实例列表，API 仅接受 `EXPLICIT`；控制库升级时将旧的动态目标计划停用并清空下一次运行时间，保留记录供用户重新选择目标后保存。 |
+| 2026-08-28 | V1 | 每天和每周计划持久化本地执行时间，调度器结合计划时区生成 Cron；计划界面将补跑以“错过后不跑”开关呈现。 |
 | 2026-08-27 | V1 | 参考 `agent-desk` 修正会话绑定：OIDC profile UID 与懒猫网关 UID 分开存储；回调保存 `X-HC-User-ID`，业务请求只比较 `session.gateway_uid` 与当前 `X-HC-User-ID`。 |
 | 2026-08-27 | V1 | `LAZYCAT_APP_DEPLOY_UID` 保持为登录事务内部作用域；正式子域名为 `mimi-app-backup`，POC 为 `mimi-app-backup-poc`。 |
 | 2026-08-27 | V1 | 单实例继续显示共享数据风险，但该提示不再要求确认框，也不阻断查看任务、手动备份或计划创建；手动入队完成校验后与浏览器请求取消解耦。 |
@@ -1456,7 +1458,8 @@ V1 发布前必须满足：
 | 2026-08-27 | V1 | OIDC 入口采用显式登录页和 `POST /auth/login`：仅在用户点击后创建 PKCE 登录事务；回调统一进入首页。浏览器遇到网关 UID 不匹配的旧会话会清理 Cookie 并回到登录页，API 返回 403。 |
 | 2026-08-27 | V1 | 删除阶段 6。阶段 0–5 构成完整本地实现路线；构建、LPK 打包和真实平台确认改为路线外事项，不再占用开发阶段。 |
 | 2026-08-27 | V1 | 阶段 5 完成本地实现：控制库新增当前租户的设置、告警、审计和事件序列；正式 API 新增 overview、alerts、settings、audit 和限时 SSE；八个主菜单及首次使用、详情、计划编辑、存储、告警和设置接入真实数据并提供中英文文案。外部 `user.notify`、OIDC 回调、网关 UID 会话绑定、A/B 隔离、网盘写入和后台补跑仍待真实平台验收；该阶段记录不包含 LPK 打包。 |
-| 2026-08-27 | V1 | 阶段 4 完成本地实现：计划 CRUD 与立即运行、Cron/时区/补跑、批次和任务租约、重试、重启回收、文件索引、导出、回收站、保留和存储维护 API；真实设备仍待验证后台启动、补跑和当前用户网盘行为。 |
+| 2026-08-27 | V1 | 阶段 4 完成本地实现：计划 CRUD 与立即运行、Cron/时区/补跑、批次和任务租约、重试、重启回收、文件索引、导出和存储扫描 API；产品不提供计划/快照删除、回收站或存储清理。 |
+| 2026-08-28 | V1 | 明确产品生命周期边界：不提供清理、删除、回收站或自动保留删除；存储页只读展示实际 ZIP 占用、临时写入和目录可达状态，设置修改即时保存。 |
 | 2026-08-27 | V1 | 阶段 3 增加当前租户手动备份闭环：完整预检、SQLite Online Backup、严格普通文件 ZIP、内外 manifest、SHA-256、快速校验、当前用户文稿目录原子提交、最小快照 API 与前端；计划和通用队列仍待后续阶段。 |
 | 2026-08-27 | V1 | 首个正式实现包采用 Vite/React 同源托管，加入 OIDC、SQLite 控制库、应用同步/探测和 OpenAPI 契约；ZIP、计划和队列仍待后续阶段。 |
 | 2026-08-27 | V1 | 对齐 PRD，增加 OIDC，保留 POC 链路，支持单/多实例，禁用管理员跨用户，改用 ZIP |

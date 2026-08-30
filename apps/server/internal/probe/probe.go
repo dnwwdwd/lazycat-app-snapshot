@@ -3,6 +3,7 @@ package probe
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -42,6 +43,125 @@ type Plan struct {
 	Files       []Entry
 	SQLite      []Entry
 	Warnings    []string
+}
+
+// ScopeValidationError identifies the declared relative path that no longer
+// resolves to the expected safe object. Callers can pause the plan without
+// ever exposing the authorized source root.
+type ScopeValidationError struct {
+	Path     string
+	Expected string
+}
+
+func (e *ScopeValidationError) Error() string {
+	return fmt.Sprintf("scope %s missing or changed type: %s", e.Expected, e.Path)
+}
+
+// ScopeCatalog exposes only safe relative metadata for the range picker.
+func ScopeCatalog(ctx context.Context, resolved source.Resolved, multiInstance bool, query string, limit int) (domain.BackupScopeCatalog, error) {
+	plan, err := BuildPlan(ctx, resolved, multiInstance)
+	if err != nil {
+		return domain.BackupScopeCatalog{}, err
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	query = strings.ToLower(strings.TrimSpace(query))
+	items := make([]domain.ScopeEntry, 0, limit)
+	appendEntry := func(entry Entry, typ string, sqlite bool) {
+		if query != "" && !strings.Contains(strings.ToLower(entry.Relative), query) {
+			return
+		}
+		if len(items) < limit {
+			items = append(items, domain.ScopeEntry{Path: entry.Relative, Type: typ, Size: entry.Info.Size(), SQLite: sqlite, Selectable: true})
+		}
+	}
+	for _, entry := range plan.Directories {
+		appendEntry(entry, "directory", false)
+	}
+	for _, entry := range plan.Files {
+		appendEntry(entry, "file", false)
+	}
+	for _, entry := range plan.SQLite {
+		appendEntry(entry, "file", true)
+	}
+	return domain.BackupScopeCatalog{Items: items}, nil
+}
+
+// ApplyScope validates allow-listed paths against a fresh source scan and
+// returns exactly the objects that may enter this archive.
+func ApplyScope(plan Plan, scope domain.BackupScope) (Plan, error) {
+	if scope.Mode == "" || scope.Mode == "FULL" {
+		return plan, nil
+	}
+	dirs := map[string]Entry{}
+	files := map[string]Entry{}
+	for _, entry := range plan.Directories {
+		dirs[entry.Relative] = entry
+	}
+	for _, entry := range append(append([]Entry{}, plan.Files...), plan.SQLite...) {
+		files[entry.Relative] = entry
+	}
+	if scope.Mode == "CORE" {
+		if len(plan.SQLite) == 0 {
+			return Plan{}, &ScopeValidationError{Path: "Notus core SQLite profile", Expected: "SQLite database"}
+		}
+		filtered := Plan{Result: plan.Result, Warnings: append([]string{}, plan.Warnings...), SQLite: append([]Entry{}, plan.SQLite...)}
+		filtered.Result.FileCount = 0
+		filtered.Result.SQLiteCount = len(filtered.SQLite)
+		filtered.Result.TotalBytes = 0
+		for _, entry := range filtered.SQLite {
+			filtered.Result.TotalBytes += entry.Info.Size()
+		}
+		return filtered, nil
+	}
+	for _, path := range scope.Directories {
+		if _, ok := dirs[path]; !ok {
+			return Plan{}, &ScopeValidationError{Path: path, Expected: "directory"}
+		}
+	}
+	for _, path := range scope.Files {
+		if _, ok := files[path]; !ok {
+			return Plan{}, &ScopeValidationError{Path: path, Expected: "file"}
+		}
+	}
+	selected := func(relative string) bool {
+		for _, root := range scope.Directories {
+			if relative == root || strings.HasPrefix(relative, root+"/") {
+				return true
+			}
+		}
+		for _, file := range scope.Files {
+			if relative == file {
+				return true
+			}
+		}
+		return false
+	}
+	filtered := Plan{Result: plan.Result, Warnings: append([]string{}, plan.Warnings...)}
+	for _, entry := range plan.Directories {
+		if selected(entry.Relative) {
+			filtered.Directories = append(filtered.Directories, entry)
+		}
+	}
+	for _, entry := range plan.Files {
+		if selected(entry.Relative) {
+			filtered.Files = append(filtered.Files, entry)
+		}
+	}
+	for _, entry := range plan.SQLite {
+		if selected(entry.Relative) {
+			filtered.SQLite = append(filtered.SQLite, entry)
+		}
+	}
+	filtered.Result.FileCount, filtered.Result.TotalBytes, filtered.Result.SQLiteCount = len(filtered.Files), 0, len(filtered.SQLite)
+	for _, entry := range append(append([]Entry{}, filtered.Files...), filtered.SQLite...) {
+		filtered.Result.TotalBytes += entry.Info.Size()
+	}
+	if filtered.ArchiveFileCount() == 0 {
+		return Plan{}, &ScopeValidationError{Path: "selected range", Expected: "backupable file"}
+	}
+	return filtered, nil
 }
 
 func (p Plan) ArchiveFileCount() int { return len(p.Files) + len(p.SQLite) }

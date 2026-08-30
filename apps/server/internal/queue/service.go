@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,7 @@ type Config struct {
 	AfterSucceeded func(context.Context, domain.BackupTask) error
 	OnTaskUpdated  func(context.Context, domain.BackupTask)
 	OnBatchUpdated func(context.Context, domain.BackupBatch)
+	OnScopeInvalid func(context.Context, domain.PlanPauseReason)
 }
 
 type Service struct {
@@ -39,6 +41,7 @@ type Service struct {
 	afterSucceeded func(context.Context, domain.BackupTask) error
 	onTaskUpdated  func(context.Context, domain.BackupTask)
 	onBatchUpdated func(context.Context, domain.BackupBatch)
+	onScopeInvalid func(context.Context, domain.PlanPauseReason)
 }
 
 func New(store *persistence.Store, backups *backup.Service, config Config) (*Service, error) {
@@ -61,7 +64,7 @@ func New(store *persistence.Store, backups *backup.Service, config Config) (*Ser
 	if err != nil {
 		return nil, err
 	}
-	service := &Service{store: store, backups: backups, tenantUID: config.TenantUID, lease: config.LeaseDuration, poll: config.PollInterval, workerID: workerID, cancelByID: map[string]context.CancelFunc{}, afterSucceeded: config.AfterSucceeded, onTaskUpdated: config.OnTaskUpdated, onBatchUpdated: config.OnBatchUpdated}
+	service := &Service{store: store, backups: backups, tenantUID: config.TenantUID, lease: config.LeaseDuration, poll: config.PollInterval, workerID: workerID, cancelByID: map[string]context.CancelFunc{}, afterSucceeded: config.AfterSucceeded, onTaskUpdated: config.OnTaskUpdated, onBatchUpdated: config.OnBatchUpdated, onScopeInvalid: config.OnScopeInvalid}
 	if err := store.RequeueExpiredTasks(context.Background(), config.TenantUID, time.Now().UTC()); err != nil {
 		return nil, fmt.Errorf("recover expired task leases: %w", err)
 	}
@@ -85,7 +88,7 @@ func (s *Service) StartManual(ctx context.Context, deployID string, sharedRiskAc
 	if err := s.store.CreateBatch(ctx, batch); err != nil {
 		return domain.BackupJob{}, err
 	}
-	job, _, err := s.enqueueInstance(ctx, batch, instance, sharedRiskAccepted, subject, role, 0, 60, 0)
+	job, _, err := s.enqueueInstance(ctx, batch, instance, sharedRiskAccepted, subject, role, 0, 60, 0, domain.BackupScope{Mode: "FULL", Revision: 1})
 	if err != nil {
 		return domain.BackupJob{}, err
 	}
@@ -107,14 +110,41 @@ func (s *Service) RunPlan(ctx context.Context, plan domain.BackupPlan, trigger s
 		}
 		return domain.BackupBatch{}, err
 	}
-	instances, accepted, err := s.planInstances(ctx, plan)
+	instances, accepted, scopes, err := s.planInstances(ctx, plan)
 	if err != nil {
 		return domain.BackupBatch{}, err
 	}
 	for _, instance := range instances {
-		if _, _, err := s.enqueueInstance(ctx, batch, instance, accepted[instance.DeployID], plan.CreatedBySubject, domain.RoleNormal, plan.Retry.MaxRetries, plan.Retry.BackoffSeconds, 10); err != nil {
+		if err := s.backups.ValidateScope(ctx, instance.DeployID, scopes[instance.DeployID]); err != nil {
+			failure, ok := backup.ScopeValidation(err)
+			if !ok {
+				return domain.BackupBatch{}, err
+			}
+			now := time.Now().UTC()
+			reason := domain.PlanPauseReason{Code: "BACKUP_SCOPE_PATH_MISSING", DeployID: instance.DeployID, Path: failure.Path, Expected: failure.Expected, DetectedAt: now, ScopeRevision: scopes[instance.DeployID].Revision}
+			if err := s.pauseForScope(ctx, plan.ID, reason); err != nil {
+				return domain.BackupBatch{}, err
+			}
+			for _, affected := range instances {
+				code := "PLAN_PAUSED_SCOPE_INVALID"
+				if affected.DeployID == instance.DeployID {
+					code = reason.Code
+				}
+				if err := s.recordSkipped(ctx, batch, affected, code, scopes[affected.DeployID], &reason); err != nil {
+					return domain.BackupBatch{}, err
+				}
+			}
+			result, err := s.store.Batch(ctx, s.tenantUID, batch.ID)
+			if err == nil {
+				s.emitBatch(ctx, result.ID)
+			}
+			return result, err
+		}
+	}
+	for _, instance := range instances {
+		if _, _, err := s.enqueueInstance(ctx, batch, instance, accepted[instance.DeployID], plan.CreatedBySubject, domain.RoleNormal, plan.Retry.MaxRetries, plan.Retry.BackoffSeconds, 10, scopes[instance.DeployID]); err != nil {
 			if errors.Is(err, domain.ErrConflict) {
-				if recordErr := s.recordSkipped(ctx, batch, instance, "INSTANCE_ALREADY_QUEUED"); recordErr != nil {
+				if recordErr := s.recordSkipped(ctx, batch, instance, "INSTANCE_ALREADY_QUEUED", scopes[instance.DeployID], nil); recordErr != nil {
 					return domain.BackupBatch{}, recordErr
 				}
 				continue
@@ -142,17 +172,11 @@ func (s *Service) existingBatch(ctx context.Context, planID string, scheduledAt 
 	return domain.BackupBatch{}, domain.ErrConflict
 }
 
-func (s *Service) planInstances(ctx context.Context, plan domain.BackupPlan) ([]domain.ApplicationInstance, map[string]bool, error) {
+func (s *Service) planInstances(ctx context.Context, plan domain.BackupPlan) ([]domain.ApplicationInstance, map[string]bool, map[string]domain.BackupScope, error) {
 	accepted := map[string]bool{}
-	if plan.TargetKind == "ALL_BACKUPABLE" {
-		items, err := s.store.BackupableInstances(ctx, s.tenantUID)
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, item := range items {
-			accepted[item.DeployID] = plan.SharedRiskAccepted
-		}
-		return items, accepted, nil
+	scopes := map[string]domain.BackupScope{}
+	if plan.TargetKind != "EXPLICIT" {
+		return nil, nil, nil, errors.New("unsupported plan target kind")
 	}
 	items := make([]domain.ApplicationInstance, 0, len(plan.Targets))
 	for _, target := range plan.Targets {
@@ -161,25 +185,30 @@ func (s *Service) planInstances(ctx context.Context, plan domain.BackupPlan) ([]
 			continue
 		}
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		items = append(items, item)
 		accepted[item.DeployID] = target.SharedRiskAccepted || plan.SharedRiskAccepted
+		scope := target.Scope
+		if scope.Mode == "" {
+			scope = domain.BackupScope{Mode: "FULL", Revision: 1}
+		}
+		scopes[item.DeployID] = scope
 	}
-	return items, accepted, nil
+	return items, accepted, scopes, nil
 }
 
-func (s *Service) enqueueInstance(ctx context.Context, batch domain.BackupBatch, instance domain.ApplicationInstance, sharedRiskAccepted bool, subject string, role domain.Role, maxRetries, retryBackoffSeconds, priority int) (domain.BackupJob, domain.BackupTask, error) {
+func (s *Service) enqueueInstance(ctx context.Context, batch domain.BackupBatch, instance domain.ApplicationInstance, sharedRiskAccepted bool, subject string, role domain.Role, maxRetries, retryBackoffSeconds, priority int, scope domain.BackupScope) (domain.BackupJob, domain.BackupTask, error) {
 	taskID, err := randomID("task")
 	if err != nil {
 		return domain.BackupJob{}, domain.BackupTask{}, err
 	}
-	job, err := s.backups.CreateJob(ctx, instance.DeployID, sharedRiskAccepted, subject, role, batch.PlanID, batch.ID, taskID, batch.TriggerType, batch.ScheduledAt)
+	job, err := s.backups.CreateJob(ctx, instance.DeployID, sharedRiskAccepted, subject, role, batch.PlanID, batch.ID, taskID, batch.TriggerType, batch.ScheduledAt, scope)
 	if err != nil {
 		return domain.BackupJob{}, domain.BackupTask{}, err
 	}
 	now := time.Now().UTC()
-	task := domain.BackupTask{ID: taskID, TenantUID: s.tenantUID, BatchID: batch.ID, PlanID: batch.PlanID, BackupJobID: job.ID, AppID: instance.AppID, ApplicationName: instance.Name, DeployID: instance.DeployID, MultiInstance: instance.MultiInstance, SharedRiskAccepted: sharedRiskAccepted, TriggerType: batch.TriggerType, Status: "QUEUED", Priority: priority, MaxRetries: maxRetries, RetryBackoffSeconds: retryBackoffSeconds, AvailableAt: now, ScheduledAt: batch.ScheduledAt, CreatedAt: now}
+	task := domain.BackupTask{ID: taskID, TenantUID: s.tenantUID, BatchID: batch.ID, PlanID: batch.PlanID, BackupJobID: job.ID, AppID: instance.AppID, ApplicationName: instance.Name, DeployID: instance.DeployID, MultiInstance: instance.MultiInstance, SharedRiskAccepted: sharedRiskAccepted, TriggerType: batch.TriggerType, Status: "QUEUED", Priority: priority, MaxRetries: maxRetries, RetryBackoffSeconds: retryBackoffSeconds, AvailableAt: now, ScheduledAt: batch.ScheduledAt, CreatedAt: now, Scope: scope}
 	if err := s.store.AddTask(ctx, task); err != nil {
 		_ = s.store.FailBackupJob(context.Background(), s.tenantUID, job.ID, "QUEUE_PERSIST_FAILED", time.Now().UTC())
 		return domain.BackupJob{}, domain.BackupTask{}, err
@@ -187,13 +216,23 @@ func (s *Service) enqueueInstance(ctx context.Context, batch domain.BackupBatch,
 	return job, task, nil
 }
 
-func (s *Service) recordSkipped(ctx context.Context, batch domain.BackupBatch, instance domain.ApplicationInstance, code string) error {
+func (s *Service) recordSkipped(ctx context.Context, batch domain.BackupBatch, instance domain.ApplicationInstance, code string, scope domain.BackupScope, validation *domain.PlanPauseReason) error {
 	id, err := randomID("task")
 	if err != nil {
 		return err
 	}
 	now := time.Now().UTC()
-	return s.store.AddTask(ctx, domain.BackupTask{ID: id, TenantUID: s.tenantUID, BatchID: batch.ID, PlanID: batch.PlanID, BackupJobID: "skipped-" + id, AppID: instance.AppID, ApplicationName: instance.Name, DeployID: instance.DeployID, MultiInstance: instance.MultiInstance, TriggerType: batch.TriggerType, Status: "SKIPPED", ErrorCode: code, AvailableAt: now, ScheduledAt: batch.ScheduledAt, CreatedAt: now, FinishedAt: &now})
+	return s.store.AddTask(ctx, domain.BackupTask{ID: id, TenantUID: s.tenantUID, BatchID: batch.ID, PlanID: batch.PlanID, BackupJobID: "skipped-" + id, AppID: instance.AppID, ApplicationName: instance.Name, DeployID: instance.DeployID, MultiInstance: instance.MultiInstance, TriggerType: batch.TriggerType, Status: "SKIPPED", ErrorCode: code, AvailableAt: now, ScheduledAt: batch.ScheduledAt, CreatedAt: now, FinishedAt: &now, Scope: scope, ScopeValidation: validation})
+}
+
+func (s *Service) pauseForScope(ctx context.Context, planID string, reason domain.PlanPauseReason) error {
+	if err := s.store.PausePlanForScope(ctx, s.tenantUID, planID, reason); err != nil {
+		return err
+	}
+	if s.onScopeInvalid != nil {
+		s.onScopeInvalid(ctx, reason)
+	}
+	return nil
 }
 
 func (s *Service) Cancel(ctx context.Context, id string) (domain.BackupTask, error) {
@@ -325,6 +364,15 @@ func (s *Service) execute(workerID, token string, task domain.BackupTask) {
 		return
 	}
 	code := backup.Code(err)
+	if code == "BACKUP_SCOPE_PATH_MISSING" && task.PlanID != "" && !strings.HasPrefix(task.PlanID, "manual-") {
+		path, expected := "", "selected path"
+		if failure, ok := backup.ScopeValidation(err); ok {
+			path, expected = failure.Path, failure.Expected
+		}
+		reason := domain.PlanPauseReason{Code: code, DeployID: task.DeployID, Path: path, Expected: expected, DetectedAt: now, ScopeRevision: task.Scope.Revision}
+		_ = s.store.SetTaskScopeValidation(context.Background(), s.tenantUID, task.ID, token, reason)
+		_ = s.pauseForScope(context.Background(), task.PlanID, reason)
+	}
 	if retryable(code) && task.AttemptCount <= task.MaxRetries {
 		base := task.RetryBackoffSeconds
 		if base <= 0 {
@@ -367,7 +415,7 @@ func (s *Service) emitBatch(ctx context.Context, id string) {
 
 func retryable(code string) bool {
 	switch code {
-	case "BACKUP_CANCELLED", "NO_APPLICATION_DATA", "UNSUPPORTED_DATABASE", "INSTANCE_NOT_BACKUPABLE", "SHARED_INSTANCE_CONFIRMATION_REQUIRED", "SOURCE_OWNER_MISMATCH", "SOURCE_INSTANCE_NOT_FOUND":
+	case "BACKUP_CANCELLED", "NO_APPLICATION_DATA", "UNSUPPORTED_DATABASE", "INSTANCE_NOT_BACKUPABLE", "SHARED_INSTANCE_CONFIRMATION_REQUIRED", "SOURCE_OWNER_MISMATCH", "SOURCE_INSTANCE_NOT_FOUND", "BACKUP_SCOPE_PATH_MISSING":
 		return false
 	default:
 		return true

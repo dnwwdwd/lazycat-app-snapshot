@@ -92,60 +92,63 @@ type SyncStatus struct {
 }
 
 type BackupJob struct {
-	ID                 string     `json:"id"`
-	TenantUID          string     `json:"-"`
-	OIDCSubject        string     `json:"-"`
-	UserRole           Role       `json:"-"`
-	AppID              string     `json:"appid"`
-	ApplicationName    string     `json:"applicationName"`
-	ApplicationVersion string     `json:"applicationVersion,omitempty"`
-	DeployID           string     `json:"deployId"`
-	MultiInstance      bool       `json:"multiInstance"`
-	SharedRiskAccepted bool       `json:"sharedRiskAccepted"`
-	Status             string     `json:"status"`
-	ErrorCode          string     `json:"errorCode,omitempty"`
-	SnapshotID         string     `json:"snapshotId,omitempty"`
-	PlanID             string     `json:"planId,omitempty"`
-	BatchID            string     `json:"batchId,omitempty"`
-	TaskID             string     `json:"taskId,omitempty"`
-	TriggerType        string     `json:"triggerType,omitempty"`
-	ScheduledAt        *time.Time `json:"scheduledAt,omitempty"`
-	CreatedAt          time.Time  `json:"createdAt"`
-	StartedAt          *time.Time `json:"startedAt,omitempty"`
-	FinishedAt         *time.Time `json:"finishedAt,omitempty"`
+	ID                 string      `json:"id"`
+	TenantUID          string      `json:"-"`
+	OIDCSubject        string      `json:"-"`
+	UserRole           Role        `json:"-"`
+	AppID              string      `json:"appid"`
+	ApplicationName    string      `json:"applicationName"`
+	ApplicationVersion string      `json:"applicationVersion,omitempty"`
+	DeployID           string      `json:"deployId"`
+	MultiInstance      bool        `json:"multiInstance"`
+	SharedRiskAccepted bool        `json:"sharedRiskAccepted"`
+	Status             string      `json:"status"`
+	ErrorCode          string      `json:"errorCode,omitempty"`
+	SnapshotID         string      `json:"snapshotId,omitempty"`
+	PlanID             string      `json:"planId,omitempty"`
+	BatchID            string      `json:"batchId,omitempty"`
+	TaskID             string      `json:"taskId,omitempty"`
+	TriggerType        string      `json:"triggerType,omitempty"`
+	Scope              BackupScope `json:"scope"`
+	ScheduledAt        *time.Time  `json:"scheduledAt,omitempty"`
+	CreatedAt          time.Time   `json:"createdAt"`
+	StartedAt          *time.Time  `json:"startedAt,omitempty"`
+	FinishedAt         *time.Time  `json:"finishedAt,omitempty"`
 }
 
 type Snapshot struct {
-	ID                    string     `json:"id"`
-	TenantUID             string     `json:"-"`
-	JobID                 string     `json:"jobId"`
-	AppID                 string     `json:"appid"`
-	ApplicationName       string     `json:"applicationName"`
-	ApplicationVersion    string     `json:"applicationVersion,omitempty"`
-	DeployID              string     `json:"deployId"`
-	MultiInstance         bool       `json:"multiInstance"`
-	SharedInstanceWarning bool       `json:"sharedInstanceWarning"`
-	Status                string     `json:"status"`
-	StoragePath           string     `json:"storagePath"`
-	ArchiveName           string     `json:"archiveName"`
-	ArchiveSize           int64      `json:"archiveSize"`
-	ArchiveSHA256         string     `json:"archiveSha256"`
-	OriginalBytes         int64      `json:"originalBytes"`
-	FileCount             int        `json:"fileCount"`
-	DirectoryCount        int        `json:"directoryCount"`
-	SQLiteCount           int        `json:"sqliteCount"`
-	SkippedCount          int        `json:"skippedCount"`
-	WarningCount          int        `json:"warningCount"`
-	CapturedAt            time.Time  `json:"capturedAt"`
-	FinishedAt            time.Time  `json:"finishedAt"`
-	VerificationStatus    string     `json:"verificationStatus"`
-	VerifiedAt            *time.Time `json:"verifiedAt,omitempty"`
-	PlanID                string     `json:"planId,omitempty"`
-	BatchID               string     `json:"batchId,omitempty"`
-	TaskID                string     `json:"taskId,omitempty"`
-	TriggerType           string     `json:"triggerType,omitempty"`
-	RetentionStatus       string     `json:"retentionStatus"`
-	TrashedAt             *time.Time `json:"trashedAt,omitempty"`
+	ID                    string      `json:"id"`
+	TenantUID             string      `json:"-"`
+	JobID                 string      `json:"jobId"`
+	AppID                 string      `json:"appid"`
+	ApplicationName       string      `json:"applicationName"`
+	ApplicationVersion    string      `json:"applicationVersion,omitempty"`
+	DeployID              string      `json:"deployId"`
+	MultiInstance         bool        `json:"multiInstance"`
+	SharedInstanceWarning bool        `json:"sharedInstanceWarning"`
+	Status                string      `json:"status"`
+	StoragePath           string      `json:"storagePath"`
+	StorageStatus         string      `json:"storageStatus,omitempty"`
+	ArchiveName           string      `json:"archiveName"`
+	ArchiveSize           int64       `json:"archiveSize"`
+	ArchiveSHA256         string      `json:"archiveSha256"`
+	OriginalBytes         int64       `json:"originalBytes"`
+	FileCount             int         `json:"fileCount"`
+	DirectoryCount        int         `json:"directoryCount"`
+	SQLiteCount           int         `json:"sqliteCount"`
+	SkippedCount          int         `json:"skippedCount"`
+	WarningCount          int         `json:"warningCount"`
+	CapturedAt            time.Time   `json:"capturedAt"`
+	FinishedAt            time.Time   `json:"finishedAt"`
+	VerificationStatus    string      `json:"verificationStatus"`
+	VerifiedAt            *time.Time  `json:"verifiedAt,omitempty"`
+	PlanID                string      `json:"planId,omitempty"`
+	BatchID               string      `json:"batchId,omitempty"`
+	TaskID                string      `json:"taskId,omitempty"`
+	TriggerType           string      `json:"triggerType,omitempty"`
+	RetentionStatus       string      `json:"retentionStatus"`
+	Scope                 BackupScope `json:"scope"`
+	TrashedAt             *time.Time  `json:"trashedAt,omitempty"`
 }
 
 type RetentionPolicy struct {
@@ -162,30 +165,65 @@ type RetryPolicy struct {
 }
 
 type BackupPlan struct {
-	ID                 string          `json:"id"`
-	TenantUID          string          `json:"-"`
-	Name               string          `json:"name"`
-	TargetKind         string          `json:"targetKind"`
-	Targets            []PlanTarget    `json:"targets"`
-	SharedRiskAccepted bool            `json:"sharedRiskAccepted"`
-	ScheduleType       string          `json:"scheduleType"`
-	CronExpression     string          `json:"cronExpression,omitempty"`
-	Timezone           string          `json:"timezone"`
-	Enabled            bool            `json:"enabled"`
-	CatchUp            bool            `json:"catchUp"`
-	MaxCatchUpSeconds  int             `json:"maxCatchUpSeconds"`
-	Retry              RetryPolicy     `json:"retry"`
-	Retention          RetentionPolicy `json:"retention"`
-	CreatedBySubject   string          `json:"-"`
-	CreatedAt          time.Time       `json:"createdAt"`
-	UpdatedAt          time.Time       `json:"updatedAt"`
-	LastScheduledAt    *time.Time      `json:"lastScheduledAt,omitempty"`
-	NextRunAt          *time.Time      `json:"nextRunAt,omitempty"`
+	ID                 string           `json:"id"`
+	TenantUID          string           `json:"-"`
+	Name               string           `json:"name"`
+	TargetKind         string           `json:"targetKind"`
+	Targets            []PlanTarget     `json:"targets"`
+	SharedRiskAccepted bool             `json:"sharedRiskAccepted"`
+	ScheduleType       string           `json:"scheduleType"`
+	ExecutionTime      string           `json:"executionTime"`
+	CronExpression     string           `json:"cronExpression,omitempty"`
+	Timezone           string           `json:"timezone"`
+	Enabled            bool             `json:"enabled"`
+	CatchUp            bool             `json:"catchUp"`
+	MaxCatchUpSeconds  int              `json:"maxCatchUpSeconds"`
+	Retry              RetryPolicy      `json:"retry"`
+	Retention          RetentionPolicy  `json:"retention"`
+	CreatedBySubject   string           `json:"-"`
+	CreatedAt          time.Time        `json:"createdAt"`
+	UpdatedAt          time.Time        `json:"updatedAt"`
+	LastScheduledAt    *time.Time       `json:"lastScheduledAt,omitempty"`
+	NextRunAt          *time.Time       `json:"nextRunAt,omitempty"`
+	PauseReason        *PlanPauseReason `json:"pauseReason,omitempty"`
+}
+
+// BackupScope is an allow-list rooted at the already-authorized appvar. Paths
+// are relative only; selecting a directory includes its current descendants.
+type BackupScope struct {
+	Mode        string   `json:"mode"`
+	Directories []string `json:"directories,omitempty"`
+	Files       []string `json:"files,omitempty"`
+	Revision    int      `json:"revision"`
+	Summary     string   `json:"summary,omitempty"`
+}
+
+type PlanPauseReason struct {
+	Code          string    `json:"code"`
+	DeployID      string    `json:"deployId"`
+	Path          string    `json:"path,omitempty"`
+	Expected      string    `json:"expected,omitempty"`
+	DetectedAt    time.Time `json:"detectedAt"`
+	ScopeRevision int       `json:"scopeRevision"`
+}
+
+type ScopeEntry struct {
+	Path       string `json:"path"`
+	Type       string `json:"type"`
+	Size       int64  `json:"size"`
+	SQLite     bool   `json:"sqlite"`
+	Selectable bool   `json:"selectable"`
+}
+
+type BackupScopeCatalog struct {
+	Items      []ScopeEntry `json:"items"`
+	NextCursor string       `json:"nextCursor,omitempty"`
 }
 
 type PlanTarget struct {
-	DeployID           string `json:"deployId"`
-	SharedRiskAccepted bool   `json:"sharedRiskAccepted"`
+	DeployID           string      `json:"deployId"`
+	SharedRiskAccepted bool        `json:"sharedRiskAccepted"`
+	Scope              BackupScope `json:"scope"`
 }
 
 type PlanInput struct {
@@ -194,6 +232,7 @@ type PlanInput struct {
 	Targets            []PlanTarget    `json:"targets"`
 	SharedRiskAccepted bool            `json:"sharedRiskAccepted"`
 	ScheduleType       string          `json:"scheduleType"`
+	ExecutionTime      string          `json:"executionTime"`
 	CronExpression     string          `json:"cronExpression,omitempty"`
 	Timezone           string          `json:"timezone"`
 	Enabled            bool            `json:"enabled"`
@@ -223,31 +262,33 @@ type BackupBatch struct {
 }
 
 type BackupTask struct {
-	ID                  string     `json:"id"`
-	TenantUID           string     `json:"-"`
-	BatchID             string     `json:"batchId"`
-	PlanID              string     `json:"planId,omitempty"`
-	BackupJobID         string     `json:"backupJobId"`
-	AppID               string     `json:"appid"`
-	ApplicationName     string     `json:"applicationName"`
-	DeployID            string     `json:"deployId"`
-	MultiInstance       bool       `json:"multiInstance"`
-	SharedRiskAccepted  bool       `json:"sharedRiskAccepted"`
-	TriggerType         string     `json:"triggerType"`
-	Status              string     `json:"status"`
-	Priority            int        `json:"priority"`
-	AttemptCount        int        `json:"attemptCount"`
-	MaxRetries          int        `json:"maxRetries"`
-	RetryBackoffSeconds int        `json:"retryBackoffSeconds"`
-	ErrorCode           string     `json:"errorCode,omitempty"`
-	AvailableAt         time.Time  `json:"availableAt"`
-	ScheduledAt         time.Time  `json:"scheduledAt"`
-	CreatedAt           time.Time  `json:"createdAt"`
-	StartedAt           *time.Time `json:"startedAt,omitempty"`
-	FinishedAt          *time.Time `json:"finishedAt,omitempty"`
-	LeaseExpiresAt      *time.Time `json:"leaseExpiresAt,omitempty"`
-	HeartbeatAt         *time.Time `json:"heartbeatAt,omitempty"`
-	SnapshotID          string     `json:"snapshotId,omitempty"`
+	ID                  string           `json:"id"`
+	TenantUID           string           `json:"-"`
+	BatchID             string           `json:"batchId"`
+	PlanID              string           `json:"planId,omitempty"`
+	BackupJobID         string           `json:"backupJobId"`
+	AppID               string           `json:"appid"`
+	ApplicationName     string           `json:"applicationName"`
+	DeployID            string           `json:"deployId"`
+	MultiInstance       bool             `json:"multiInstance"`
+	SharedRiskAccepted  bool             `json:"sharedRiskAccepted"`
+	TriggerType         string           `json:"triggerType"`
+	Status              string           `json:"status"`
+	Priority            int              `json:"priority"`
+	AttemptCount        int              `json:"attemptCount"`
+	MaxRetries          int              `json:"maxRetries"`
+	RetryBackoffSeconds int              `json:"retryBackoffSeconds"`
+	ErrorCode           string           `json:"errorCode,omitempty"`
+	AvailableAt         time.Time        `json:"availableAt"`
+	ScheduledAt         time.Time        `json:"scheduledAt"`
+	CreatedAt           time.Time        `json:"createdAt"`
+	StartedAt           *time.Time       `json:"startedAt,omitempty"`
+	FinishedAt          *time.Time       `json:"finishedAt,omitempty"`
+	LeaseExpiresAt      *time.Time       `json:"leaseExpiresAt,omitempty"`
+	HeartbeatAt         *time.Time       `json:"heartbeatAt,omitempty"`
+	SnapshotID          string           `json:"snapshotId,omitempty"`
+	Scope               BackupScope      `json:"scope"`
+	ScopeValidation     *PlanPauseReason `json:"scopeValidation,omitempty"`
 }
 
 type TaskAttempt struct {

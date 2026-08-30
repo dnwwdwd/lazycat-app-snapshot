@@ -1,7 +1,0 @@
-buildscript: sh lzc/build-poc-package.sh
-manifest: ./lzc-manifest.poc.yml
-contentdir: ./lzc-dist-poc
-pkgout: ./
-icon: ./lzc-icon.png
-envs:
-  - DEV_MODE=1

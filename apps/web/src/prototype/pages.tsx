@@ -1191,7 +1191,7 @@ function BackupsPage({ onSnapshot, showToast }) {
             onClick={() =>
               showToast(
                 "索引已重建",
-                "已扫描 LazycatAppBackup，发现 3 份快照。",
+                "已扫描 MimiAppBakcup，发现 3 份快照。",
               )
             }
           >
@@ -1355,7 +1355,7 @@ function StoragePage({ showToast }) {
           <button
             className="btn btn-secondary"
             onClick={() =>
-              showToast("扫描完成", "已对账 LazycatAppBackup 目录。")
+              showToast("扫描完成", "已对账 MimiAppBakcup 目录。")
             }
           >
             <Icon name="refresh" size={14} />
@@ -1468,7 +1468,7 @@ function StoragePage({ showToast }) {
               caption="UTC 时间目录 · 不暴露宿主机绝对路径"
             />
             <div className="tree" style={{ marginTop: 16 }}>
-              <div className="folder">LazycatAppBackup/</div>
+              <div className="folder">MimiAppBakcup/</div>
               <div>
                 ├── <span className="folder">20260827T020000.000Z/</span>
               </div>

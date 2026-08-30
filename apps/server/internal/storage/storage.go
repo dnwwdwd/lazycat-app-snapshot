@@ -22,7 +22,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const ProductDirectory = "LazycatAppBackup"
+const ProductDirectory = "MimiAppBakcup"
 
 type Store struct{ base string }
 
@@ -44,10 +44,29 @@ type FileIndexEntry struct {
 }
 
 type Usage struct {
-	ArchiveBytes int64
+	ArchiveBytes   int64
 	AvailableBytes int64
-	PartialCount int
-	TrashCount   int
+	PartialCount   int
+	TrashCount     int
+}
+
+// LocationStatus reports whether a persisted snapshot directory can still be
+// reached from the current user's document root. It intentionally checks only
+// the directory itself; archive integrity remains an explicit maintenance
+// operation and is not triggered by opening the backup-library detail view.
+func (s *Store) LocationStatus(location Location) string {
+	directory, err := s.resolve(location.Directory)
+	if err != nil {
+		return "INACCESSIBLE"
+	}
+	info, err := os.Lstat(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return "MISSING"
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "INACCESSIBLE"
+	}
+	return "AVAILABLE"
 }
 
 func New(documentRoot string) (*Store, error) {

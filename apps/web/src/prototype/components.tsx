@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import { navGroups } from "./data";
 
 const iconPaths = {
@@ -88,6 +88,11 @@ const iconPaths = {
       <circle cx="19" cy="12" r="1" />
     </>
   ),
+  edit: (
+    <>
+      <path d="m14.5 5.5 4 4M4 20l4.2-1 10-10a2.8 2.8 0 0 0-4-4l-10 10L4 20z" />
+    </>
+  ),
   check: <path d="m5 12 4 4L19 6" />,
   close: (
     <>
@@ -121,6 +126,25 @@ const iconPaths = {
     <>
       <path d="M6 3h8l4 4v14H6z" />
       <path d="M14 3v5h5" />
+    </>
+  ),
+  fileText: (
+    <>
+      <path d="M6 3h8l4 4v14H6z" />
+      <path d="M14 3v5h5M9 13h6M9 17h5" />
+    </>
+  ),
+  image: (
+    <>
+      <rect x="4" y="5" width="16" height="14" rx="2" />
+      <circle cx="9" cy="10" r="1.5" />
+      <path d="m5 17 4.5-4 3 2.5 2.5-3 4 4.5" />
+    </>
+  ),
+  code: (
+    <>
+      <path d="m9 6-6 6 6 6M15 6l6 6-6 6" />
+      <path d="m14 4-4 16" />
     </>
   ),
   download: (
@@ -354,7 +378,6 @@ function Sidebar({ route, navigate, alertCount, session }) {
         </div>
         <div>
           <div className="brand-title">咪咪应用备份</div>
-          <div className="brand-sub">Mimi backup · V1</div>
         </div>
       </div>
       {navGroups.map((group) => (
@@ -415,50 +438,6 @@ function MobileNavigation({ route, navigate, alertCount }) {
     </nav>
   );
 }
-function Topbar({ navigate, onAlerts, onSession, session }) {
-  const [lang, setLang] = useState("中文");
-  const displayName = session?.displayName || "登录用户";
-  return (
-    <header className="topbar">
-      <div className="top-actions">
-        <label className="global-search">
-          <Icon name="search" size={15} />
-          <input
-            aria-label="全局搜索"
-            placeholder="搜索应用、快照或任务"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") navigate("applications");
-            }}
-          />
-        </label>
-        <button className="top-btn" title="告警" onClick={onAlerts}>
-          <Icon name="bell" size={16} />
-          <span className="alert-dot"></span>
-        </button>
-        <button
-          className="lang-switch"
-          onClick={() => setLang(lang === "中文" ? "EN" : "中文")}
-        >
-          {lang} <span style={{ color: "#9aa9c0" }}>⌄</span>
-        </button>
-        <button className="user-menu" onClick={onSession}>
-          <span
-            className="avatar"
-            style={{ width: 31, height: 31, fontSize: 11 }}
-          >
-            {displayName.slice(0, 1) || "用"}
-          </span>
-          <span className="user-meta">
-            <strong>{displayName}</strong>
-            <span>{session?.role || "—"} · {session ? "会话有效" : "读取中"}</span>
-          </span>
-          <Icon name="chevron" size={14} />
-        </button>
-      </div>
-    </header>
-  );
-}
-
 export {
   Icon,
   StatusPill,
@@ -469,5 +448,4 @@ export {
   Dropdown,
   Sidebar,
   MobileNavigation,
-  Topbar,
 };
