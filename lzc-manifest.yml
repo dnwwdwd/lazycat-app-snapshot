@@ -4,7 +4,7 @@ application:
   background_task: true
   oidc_redirect_path: /auth/oidc/callback
   routes:
-    - /=http://web.mimi-app-backup.lzcapp:8080
+    - /=http://web.cloud.lazycat.app.mimi-app-backup.lzcapp:8080
 
 services:
   web:

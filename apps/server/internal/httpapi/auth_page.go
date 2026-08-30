@@ -6,23 +6,25 @@ import (
 )
 
 type authPageCopy struct {
-	Language string
-	Title    string
-	Eyebrow  string
-	Heading  string
-	Button   string
-	Notice   string
+	Language    string
+	Title       string
+	Eyebrow     string
+	Heading     string
+	Description string
+	Button      string
+	Notice      string
 }
 
 func authCopy(request *http.Request, reason string) authPageCopy {
 	english := strings.HasPrefix(strings.ToLower(request.Header.Get("Accept-Language")), "en")
 	if english {
 		copy := authPageCopy{
-			Language: "en",
-			Title:    "Sign in · Mimi App Backup",
-			Eyebrow:  "MIMI APP BACKUP",
-			Heading:  "Keep your application data within reach.",
-			Button:   "Continue with Lazycat OIDC",
+			Language:    "en",
+			Title:       "Sign in · Mimi App Backup",
+			Eyebrow:     "MIMI APP BACKUP",
+			Heading:     "Protect application data after you sign in.",
+			Description: "All product pages require Lazycat OIDC. Backups write only to the signed-in account’s drive.",
+			Button:      "Continue with Lazycat OIDC",
 		}
 		if reason == "identity_mismatch" {
 			copy.Notice = "Your previous session did not match this application instance and was cleared. Authorize again with the Lazycat account that owns this instance."
@@ -30,11 +32,12 @@ func authCopy(request *http.Request, reason string) authPageCopy {
 		return copy
 	}
 	copy := authPageCopy{
-		Language: "zh-CN",
-		Title:    "登录 · 咪咪应用备份",
-		Eyebrow:  "MIMI APP BACKUP",
-		Heading:  "把应用数据，留在随时可取的地方。",
-		Button:   "使用懒猫 OIDC 登录",
+		Language:    "zh-CN",
+		Title:       "登录 · 咪咪应用备份",
+		Eyebrow:     "MIMI APP BACKUP",
+		Heading:     "登录后开始保护应用数据",
+		Description: "所有业务页面都需要经过懒猫 OIDC 登录。备份只写入当前账号自己的网盘。",
+		Button:      "使用懒猫 OIDC 登录",
 	}
 	if reason == "identity_mismatch" {
 		copy.Notice = "上一段会话与当前懒猫账号不一致，已安全退出。请重新登录。"
@@ -58,39 +61,36 @@ func (s *Server) renderLoginPage(w http.ResponseWriter, r *http.Request, reason,
   <meta name="color-scheme" content="light">
   <title>` + templateEscape(copy.Title) + `</title>
   <style>
-    :root { color: #172b50; background: #eef5ff; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Noto Sans SC", sans-serif; }
+    :root { color: #1e2b40; background: #f2f6fc; font-family: "Avenir Next", "SF Pro Display", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
     * { box-sizing: border-box; }
-    body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; background: #eef5ff; }
-    .shell { width: min(960px, 100%); min-height: 550px; display: grid; grid-template-columns: 1.1fr .9fr; overflow: hidden; border-radius: 28px; background: #fff; box-shadow: 0 28px 75px rgba(23,43,80,.16); }
-    .intro { position: relative; overflow: hidden; padding: clamp(32px, 7vw, 72px); color: #fff; background: #172b50; }
-    .intro::before, .intro::after { position: absolute; border-radius: 999px; content: ""; pointer-events: none; }
-    .intro::before { width: 260px; height: 260px; top: -120px; right: -105px; background: rgba(255,184,68,.18); }
-    .intro::after { width: 180px; height: 180px; bottom: -94px; left: -72px; background: rgba(126,136,222,.24); }
-    .brand, .intro-copy { position: relative; z-index: 1; }
-    .brand { display: flex; align-items: center; gap: 13px; }
-    .brand-mark { width: 50px; height: 50px; overflow: hidden; border: 3px solid rgba(255,255,255,.16); border-radius: 17px; background: #edf4ff; box-shadow: 0 9px 20px rgba(0,0,0,.16); }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; background: #f2f6fc; }
+    .shell { width: min(420px, calc(100% - 32px)); }
+    .intro { padding: 0; color: #1e2b40; background: transparent; }
+    .brand { display: flex; align-items: center; gap: 11px; margin-bottom: 26px; }
+    .brand-mark { width: 40px; height: 40px; overflow: hidden; border-radius: 12px; background: #fff; box-shadow: 0 7px 16px rgba(30,59,114,.2); }
     .brand-mark img { width: 100%; height: 100%; object-fit: cover; }
-    .brand-name { font-size: 16px; font-weight: 800; letter-spacing: .02em; }
-    .brand-sub { margin-top: 3px; color: #a8bbdb; font-size: 10px; letter-spacing: .13em; }
-    .intro-copy { margin-top: clamp(76px, 15vh, 145px); max-width: 420px; }
-    .eyebrow { color: #ffcd78; font-size: 11px; font-weight: 800; letter-spacing: .17em; }
-    h1 { margin: 13px 0 0; font-size: clamp(30px, 3.4vw, 44px); line-height: 1.17; letter-spacing: -.045em; text-wrap: balance; }
-    .sign-in { display: flex; flex-direction: column; justify-content: center; padding: clamp(32px, 6vw, 64px); }
-    .notice { display: flex; gap: 10px; margin: 0 0 20px; padding: 12px; border: 1px solid #f2d8a0; border-radius: 14px; color: #806126; background: #fff8e9; }
-    .notice-mark { width: 20px; height: 20px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; color: #fff; background: #e9941d; font-size: 12px; font-weight: 900; }
+    .brand-name { font-size: 15px; font-weight: 780; letter-spacing: -.02em; }
+    .brand-sub { margin-top: 3px; color: #8b9ab0; font-size: 10px; letter-spacing: .03em; }
+    .intro-copy { margin-bottom: 18px; }
+    .eyebrow { color: #1e3b72; font-size: 10px; font-weight: 750; letter-spacing: .1em; }
+    h1 { margin: 7px 0 0; font-size: 25px; line-height: 1.15; letter-spacing: -.028em; }
+    .description { margin: 8px 0 0; color: #60708a; font-size: 13px; line-height: 1.55; }
+    .sign-in { padding: 18px; border: 1px solid #dbe4f0; border-radius: 16px; background: #fff; box-shadow: 0 1px 3px rgba(28,51,87,.08), 0 12px 30px rgba(28,51,87,.05); }
+    .notice { display: flex; gap: 10px; margin: 0 0 18px; padding: 13px 14px; border: 1px solid #f3d19b; border-radius: 10px; color: #80501c; background: #fff3df; }
+    .notice-mark { width: 20px; height: 20px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; color: #fff; background: #aa6418; font-size: 12px; font-weight: 900; }
     .notice p { margin: 0; font-size: 12px; line-height: 1.55; }
     form { margin: 0; }
-    button { width: 100%; min-height: 48px; border: 0; border-radius: 13px; color: #172b50; background: #ffb844; box-shadow: 0 8px 16px rgba(233,148,29,.2); cursor: pointer; font: inherit; font-size: 14px; font-weight: 800; transition: transform .18s ease, background .18s ease; }
-    button:hover { background: #ffc45c; transform: translateY(-1px); }
-    button:focus-visible { outline: 3px solid rgba(233,148,29,.45); outline-offset: 3px; }
-    @media (max-width: 720px) { body { padding: 14px; } .shell { min-height: 0; grid-template-columns: 1fr; border-radius: 23px; } .intro { min-height: 275px; padding: 30px; } .intro-copy { margin-top: 46px; } .sign-in { padding: 34px 30px 39px; } }
+    button { width: 100%; min-height: 38px; border: 0; border-radius: 9px; color: #fff; background: #1e3b72; box-shadow: 0 7px 16px rgba(30,59,114,.2); cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; transition: background-color .16s ease, transform .16s ease; }
+    button:hover { background: #142b58; }
+    button:active { transform: scale(.97); }
+    @media (max-width: 520px) { body { padding: 16px; } .shell { width: min(420px, 100%); } }
   </style>
 </head>
 <body>
   <main class="shell">
     <section class="intro" aria-labelledby="login-heading">
       <div class="brand"><div class="brand-mark"><img src="/assets/lzc-icon.png" alt=""></div><div><div class="brand-name">咪咪应用备份</div><div class="brand-sub">MIMI BACKUP · V1</div></div></div>
-      <div class="intro-copy"><div class="eyebrow">` + templateEscape(copy.Eyebrow) + `</div><h1 id="login-heading">` + templateEscape(copy.Heading) + `</h1></div>
+      <div class="intro-copy"><div class="eyebrow">` + templateEscape(copy.Eyebrow) + `</div><h1 id="login-heading">` + templateEscape(copy.Heading) + `</h1><p class="description">` + templateEscape(copy.Description) + `</p></div>
     </section>
     <section class="sign-in" aria-label="` + templateEscape(copy.Button) + `">
       ` + notice + `
