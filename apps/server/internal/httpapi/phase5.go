@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -230,6 +231,12 @@ func phase5Unavailable(w http.ResponseWriter, r *http.Request) {
 }
 
 func phase5Error(w http.ResponseWriter, r *http.Request, err error) {
+	// A reverse proxy can cancel a request after the browser navigates away or
+	// times out. There is no response left to send and this is not an
+	// application failure worth logging as a 500.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
 	if errors.Is(err, domain.ErrInvalidCursor) {
 		errorJSON(w, r, http.StatusBadRequest, "INVALID_CURSOR", "分页游标无效")
 		return

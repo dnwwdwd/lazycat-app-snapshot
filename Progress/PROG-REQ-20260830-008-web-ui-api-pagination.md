@@ -22,6 +22,8 @@
 - CSS 严格保留设计源内容，因此没有追加键盘焦点、点击面积或动态效果调整。
 - 未执行测试；本项目规则禁止修改或运行测试。真实平台仍需核验 OIDC、A/B 租户隔离、appvar 范围、网盘写入和后台任务。
 
+- 2026-08-31：修复首屏被 `/api/session` 阻塞的问题。正式界面现在先渲染应用壳层和当前路由，session、页面资源与 SSE 继续独立加载；浏览器请求慢或被代理取消时不再停留在“正在读取当前账号的数据…”。`npm run build --prefix apps/web`、`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server` 与 `git diff --check` 通过。真实懒猫设备上的代理取消日志仍需回归观察。
+
 ## 本地检查
 
 - `npm run api:generate --prefix apps/web`：通过。

@@ -56,6 +56,7 @@ export function useLiveBackupData() {
   const [state, setState] = useState<LiveState>(initialState);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<LiveError>();
+  const sessionReady = Boolean(state.session);
   const filters = useRef<Record<PageKey, URLSearchParams>>({
     applications: new URLSearchParams([["limit", "15"]]),
     backups: new URLSearchParams([["limit", "15"]]),
@@ -120,20 +121,15 @@ export function useLiveBackupData() {
     setLoading(true);
     setError(undefined);
     try {
-      const [
-        session,
-        overview,
-        applicationPage,
-        plans,
-        taskPage,
-        batchPage,
-        backupPage,
-        storage,
-        alertPage,
-        settings,
-        auditPage,
-      ] = await Promise.all([
-        api.session(),
+      // Resolve the session independently so a slow or cancelled secondary
+      // resource cannot keep the whole application on the initial loading
+      // screen. The current tenant is the only prerequisite for rendering the
+      // shell; each other resource can fail and be retried independently.
+      const session = await api.session();
+      if (!mounted.current) return;
+      setState((current) => ({ ...current, session }));
+
+      const results = await Promise.allSettled([
         api.overview(),
         api.applications(filters.current.applications),
         api.plans(),
@@ -146,49 +142,85 @@ export function useLiveBackupData() {
         api.audit(filters.current.audit),
       ]);
       if (!mounted.current) return;
-      setState({
-        session,
+
+      const [
         overview,
-        plans: plans.items || [],
+        applicationPage,
+        plans,
+        taskPage,
+        batchPage,
+        backupPage,
         storage,
+        alertPage,
         settings,
-        applications: {
-          items: applicationPage.items || [],
-          nextCursor: applicationPage.nextCursor,
-          history: [],
-          limit: Number(filters.current.applications.get("limit") || 15),
-        },
-        tasks: {
-          items: taskPage.items || [],
-          nextCursor: taskPage.nextCursor,
-          history: [],
-          limit: Number(filters.current.tasks.get("limit") || 15),
-        },
-        batches: {
-          items: batchPage.items || [],
-          nextCursor: batchPage.nextCursor,
-          history: [],
-          limit: Number(filters.current.batches.get("limit") || 15),
-        },
-        backups: {
-          items: backupPage.items || [],
-          nextCursor: backupPage.nextCursor,
-          history: [],
-          limit: Number(filters.current.backups.get("limit") || 15),
-        },
-        alerts: {
-          items: alertPage.items || [],
-          nextCursor: alertPage.nextCursor,
-          history: [],
-          limit: Number(filters.current.alerts.get("limit") || 15),
-        },
-        audit: {
-          items: auditPage.items || [],
-          nextCursor: auditPage.nextCursor,
-          history: [],
-          limit: Number(filters.current.audit.get("limit") || 15),
-        },
-      });
+        auditPage,
+      ] = results;
+      setState((current) => ({
+        ...current,
+        overview: overview.status === "fulfilled" ? overview.value : current.overview,
+        plans: plans.status === "fulfilled" ? plans.value.items || [] : current.plans,
+        storage: storage.status === "fulfilled" ? storage.value : current.storage,
+        settings: settings.status === "fulfilled" ? settings.value : current.settings,
+        applications:
+          applicationPage.status === "fulfilled"
+            ? {
+                items: applicationPage.value.items || [],
+                nextCursor: applicationPage.value.nextCursor,
+                history: [],
+                limit: Number(filters.current.applications.get("limit") || 15),
+              }
+            : current.applications,
+        tasks:
+          taskPage.status === "fulfilled"
+            ? {
+                items: taskPage.value.items || [],
+                nextCursor: taskPage.value.nextCursor,
+                history: [],
+                limit: Number(filters.current.tasks.get("limit") || 15),
+              }
+            : current.tasks,
+        batches:
+          batchPage.status === "fulfilled"
+            ? {
+                items: batchPage.value.items || [],
+                nextCursor: batchPage.value.nextCursor,
+                history: [],
+                limit: Number(filters.current.batches.get("limit") || 15),
+              }
+            : current.batches,
+        backups:
+          backupPage.status === "fulfilled"
+            ? {
+                items: backupPage.value.items || [],
+                nextCursor: backupPage.value.nextCursor,
+                history: [],
+                limit: Number(filters.current.backups.get("limit") || 15),
+              }
+            : current.backups,
+        alerts:
+          alertPage.status === "fulfilled"
+            ? {
+                items: alertPage.value.items || [],
+                nextCursor: alertPage.value.nextCursor,
+                history: [],
+                limit: Number(filters.current.alerts.get("limit") || 15),
+              }
+            : current.alerts,
+        audit:
+          auditPage.status === "fulfilled"
+            ? {
+                items: auditPage.value.items || [],
+                nextCursor: auditPage.value.nextCursor,
+                history: [],
+                limit: Number(filters.current.audit.get("limit") || 15),
+              }
+            : current.audit,
+      }));
+
+      const failed = results.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failed) handleFailure(failed.reason);
     } catch (caught) {
       handleFailure(caught);
     } finally {
@@ -204,6 +236,7 @@ export function useLiveBackupData() {
   }, [refresh]);
 
   useEffect(() => {
+    if (!sessionReady) return;
     let source: EventSource | undefined;
     let reconnect: number | undefined;
     let merge: number | undefined;
@@ -237,7 +270,7 @@ export function useLiveBackupData() {
       window.clearTimeout(reconnect);
       window.clearTimeout(merge);
     };
-  }, [refresh]);
+  }, [refresh, sessionReady]);
 
   const setFilter = useCallback(
     async (key: PageKey, entries: Record<string, string | undefined>) => {

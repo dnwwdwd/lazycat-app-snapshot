@@ -1,5 +1,5 @@
 package: cloud.lazycat.app.mimi-app-backup
-version: 0.1.5
+version: 0.1.0
 name: 咪咪应用备份
 description: 自动备份懒猫应用数据
 author: dnwwdwd

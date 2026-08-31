@@ -131,16 +131,10 @@ export default function App() {
                   (item: any) => item.status === "OPEN",
                 ).length
               : undefined;
-  const content =
-    live.loading && !live.state.session ? (
-      <div className="page">
-        <div className="panel">
-          <div className="empty">
-            {t("正在读取当前账号的数据…", "Loading current-account data…")}
-          </div>
-        </div>
-      </div>
-    ) : route === "overview" ? (
+  // Render the shell and route immediately. Session and page resources are
+  // loaded independently; a slow or cancelled session request must not leave
+  // the whole application trapped on the initial loading screen.
+  const content = route === "overview" ? (
       <OverviewPage
         state={live.state}
         locale={locale}
