@@ -271,7 +271,11 @@ func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
 	}
 	page, err := s.catalog.List(r.Context(), filter)
 	if err != nil {
-		errorJSON(w, r, http.StatusBadRequest, "INVALID_CURSOR", "分页游标无效")
+		if errors.Is(err, domain.ErrInvalidCursor) {
+			errorJSON(w, r, http.StatusBadRequest, "INVALID_CURSOR", "分页游标无效")
+		} else {
+			errorJSON(w, r, http.StatusServiceUnavailable, "APPLICATION_CATALOG_UNAVAILABLE", "应用目录暂时不可用")
+		}
 		return
 	}
 	syncStatus, err := s.catalog.SyncStatus(r.Context())

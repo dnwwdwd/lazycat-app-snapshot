@@ -24,6 +24,8 @@
 
 - 2026-08-31：修复首屏被 `/api/session` 阻塞的问题。正式界面现在先渲染应用壳层和当前路由，session、页面资源与 SSE 继续独立加载；浏览器请求慢或被代理取消时不再停留在“正在读取当前账号的数据…”。`npm run build --prefix apps/web`、`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server` 与 `git diff --check` 通过。真实懒猫设备上的代理取消日志仍需回归观察。
 
+- 2026-08-31：复核正式界面的真实 API 数据链路。保留 `live.ts` 对 session、应用目录、概览、计划、任务、批次、快照、存储、告警、设置和审计接口的读取；新增应用目录同步状态回读与运行中轮询，设置页补齐异步设置初始化；后端仅将游标错误映射为 `INVALID_CURSOR`，其他目录读取失败返回 `APPLICATION_CATALOG_UNAVAILABLE`。`npm run build --prefix apps/web`、`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server` 与 `git diff --check` 通过。真实平台数据和 SDK 目录查询仍需现场验证。
+
 ## 本地检查
 
 - `npm run api:generate --prefix apps/web`：通过。

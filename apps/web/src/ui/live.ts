@@ -14,6 +14,7 @@ type PageState = {
 type LiveError = { code: string; fallback?: string };
 type LiveState = {
   session?: any;
+  sync?: any;
   overview?: any;
   plans: any[];
   storage?: any;
@@ -157,6 +158,10 @@ export function useLiveBackupData() {
       ] = results;
       setState((current) => ({
         ...current,
+        sync:
+          applicationPage.status === "fulfilled"
+            ? applicationPage.value.sync
+            : current.sync,
         overview: overview.status === "fulfilled" ? overview.value : current.overview,
         plans: plans.status === "fulfilled" ? plans.value.items || [] : current.plans,
         storage: storage.status === "fulfilled" ? storage.value : current.storage,
@@ -229,11 +234,24 @@ export function useLiveBackupData() {
   }, [handleFailure]);
 
   useEffect(() => {
+    // React StrictMode mounts effects twice in development. Reset the shared
+    // lifecycle guard when the active effect is installed so the second
+    // setup is allowed to commit its API responses.
+    mounted.current = true;
     void refresh();
     return () => {
       mounted.current = false;
     };
   }, [refresh]);
+
+  useEffect(() => {
+    // Catalog discovery starts asynchronously when the server boots. Keep
+    // reading the real API until that sync publishes its terminal state;
+    // otherwise the first empty page would look like an empty account.
+    if (state.sync?.state !== "RUNNING" || loading) return;
+    const timer = window.setTimeout(() => void refresh(), 1500);
+    return () => window.clearTimeout(timer);
+  }, [loading, refresh, state.sync?.state]);
 
   useEffect(() => {
     if (!sessionReady) return;

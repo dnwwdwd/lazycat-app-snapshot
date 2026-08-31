@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Archive,
   Bell,
@@ -357,6 +357,7 @@ export function ApplicationsPage({
   const [selected, setSelected] = useState<string[]>([]);
   const [tab, setTab] = useState("all");
   const page = state.applications;
+  const syncing = state.sync?.state === "RUNNING";
   const submitSearch = (value: string) => {
     setQuery(value);
     window.clearTimeout((submitSearch as any).timer);
@@ -771,11 +772,19 @@ export function ApplicationsPage({
                 <tr>
                   <td colSpan={11}>
                     <Empty
-                      label={text(
-                        locale,
-                        "没有找到匹配的应用实例",
-                        "No matching application instances",
-                      )}
+                      label={
+                        syncing
+                          ? text(
+                              locale,
+                              "正在同步当前账号的应用目录…",
+                              "Syncing applications for this account…",
+                            )
+                          : text(
+                              locale,
+                              "没有找到匹配的应用实例",
+                              "No matching application instances",
+                            )
+                      }
                     />
                   </td>
                 </tr>
@@ -1813,6 +1822,14 @@ export function SettingsPage({
   const [draft, setDraft] = useState<any>(state.settings);
   const [notice, setNotice] = useState("");
   const values = draft || state.settings;
+  useEffect(() => {
+    if (!state.settings) return;
+    setDraft((current: any) =>
+      current && current.updatedAt === state.settings.updatedAt
+        ? current
+        : state.settings,
+    );
+  }, [state.settings]);
   if (!values)
     return (
       <div className="page">
