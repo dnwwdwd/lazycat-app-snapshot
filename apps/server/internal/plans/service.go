@@ -15,20 +15,54 @@ import (
 	"cloud.lazycat.app.backup/apps/server/internal/domain"
 	"cloud.lazycat.app.backup/apps/server/internal/persistence"
 	"cloud.lazycat.app.backup/apps/server/internal/queue"
+	tenantpkg "cloud.lazycat.app.backup/apps/server/internal/tenant"
 	"github.com/robfig/cron/v3"
 )
 
 type Service struct {
-	store     *persistence.Store
-	queue     *queue.Service
-	tenantUID string
+	store       *persistence.Store
+	queue       *queue.Service
+	tenantUID   string
+	tenantScope *tenantpkg.Scope
 }
 
-func New(store *persistence.Store, queueService *queue.Service, tenantUID string) (*Service, error) {
+func New(store *persistence.Store, queueService *queue.Service, tenantUID string, scopes ...*tenantpkg.Scope) (*Service, error) {
 	if store == nil || queueService == nil || tenantUID == "" {
 		return nil, errors.New("plan store, queue and tenant are required")
 	}
-	return &Service{store: store, queue: queueService, tenantUID: tenantUID}, nil
+	tenantScope := tenantpkg.New(tenantUID)
+	initialTenant := strings.TrimSpace(tenantUID)
+	if len(scopes) > 0 && scopes[0] != nil {
+		tenantScope = scopes[0]
+		initialTenant = tenantScope.UID()
+	}
+	return &Service{store: store, queue: queueService, tenantUID: initialTenant, tenantScope: tenantScope}, nil
+}
+
+// ForTenant binds plan operations to the authenticated gateway UID while
+// sharing the scheduler and queue scope.
+func (s *Service) ForTenant(tenantUID string) *Service {
+	if s == nil {
+		return nil
+	}
+	if s.tenantScope != nil {
+		_ = s.tenantScope.Bind(tenantUID)
+	}
+	clone := *s
+	clone.tenantUID = strings.TrimSpace(tenantUID)
+	if s.queue != nil {
+		clone.queue = s.queue.ForTenant(tenantUID)
+	}
+	return &clone
+}
+
+func (s *Service) currentTenant() string {
+	if s.tenantScope != nil {
+		if uid := s.tenantScope.UID(); uid != "" {
+			return uid
+		}
+	}
+	return strings.TrimSpace(s.tenantUID)
 }
 
 func (s *Service) Create(ctx context.Context, input domain.PlanInput, subject string) (domain.BackupPlan, error) {
@@ -41,18 +75,20 @@ func (s *Service) Create(ctx context.Context, input domain.PlanInput, subject st
 	if err != nil {
 		return domain.BackupPlan{}, err
 	}
-	plan.ID, plan.TenantUID, plan.CreatedBySubject, plan.CreatedAt, plan.UpdatedAt = id, s.tenantUID, subject, now, now
+	tenantUID := s.currentTenant()
+	plan.ID, plan.TenantUID, plan.CreatedBySubject, plan.CreatedAt, plan.UpdatedAt = id, tenantUID, subject, now, now
 	if err := s.validateTargets(ctx, plan); err != nil {
 		return domain.BackupPlan{}, err
 	}
 	if err := s.store.CreatePlan(ctx, plan); err != nil {
 		return domain.BackupPlan{}, err
 	}
-	return s.store.Plan(ctx, s.tenantUID, plan.ID)
+	return s.store.Plan(ctx, tenantUID, plan.ID)
 }
 
 func (s *Service) Update(ctx context.Context, id string, input domain.PlanInput) (domain.BackupPlan, error) {
-	current, err := s.store.Plan(ctx, s.tenantUID, id)
+	tenantUID := s.currentTenant()
+	current, err := s.store.Plan(ctx, tenantUID, id)
 	if err != nil {
 		return domain.BackupPlan{}, err
 	}
@@ -61,36 +97,38 @@ func (s *Service) Update(ctx context.Context, id string, input domain.PlanInput)
 	if err != nil {
 		return domain.BackupPlan{}, err
 	}
-	plan.ID, plan.TenantUID, plan.CreatedBySubject, plan.CreatedAt, plan.UpdatedAt, plan.LastScheduledAt = current.ID, s.tenantUID, current.CreatedBySubject, current.CreatedAt, now, current.LastScheduledAt
+	plan.ID, plan.TenantUID, plan.CreatedBySubject, plan.CreatedAt, plan.UpdatedAt, plan.LastScheduledAt = current.ID, tenantUID, current.CreatedBySubject, current.CreatedAt, now, current.LastScheduledAt
 	if err := s.validateTargets(ctx, plan); err != nil {
 		return domain.BackupPlan{}, err
 	}
 	changed := applyScopeRevisions(&plan, current)
-	if err := s.store.UpdatePlan(ctx, s.tenantUID, plan, changed); err != nil {
+	if err := s.store.UpdatePlan(ctx, tenantUID, plan, changed); err != nil {
 		return domain.BackupPlan{}, err
 	}
-	return s.store.Plan(ctx, s.tenantUID, id)
+	return s.store.Plan(ctx, tenantUID, id)
 }
 
 func (s *Service) List(ctx context.Context) ([]domain.BackupPlan, error) {
-	return s.store.Plans(ctx, s.tenantUID)
+	return s.store.Plans(ctx, s.currentTenant())
 }
 func (s *Service) Plan(ctx context.Context, id string) (domain.BackupPlan, error) {
-	return s.store.Plan(ctx, s.tenantUID, id)
+	return s.store.Plan(ctx, s.currentTenant(), id)
 }
 func (s *Service) Delete(ctx context.Context, id string) error {
-	return s.store.DeletePlan(ctx, s.tenantUID, id)
+	return s.store.DeletePlan(ctx, s.currentTenant(), id)
 }
 
 func (s *Service) Pause(ctx context.Context, id string) (domain.BackupPlan, error) {
-	if err := s.store.SetPlanEnabled(ctx, s.tenantUID, id, false, nil, time.Now().UTC()); err != nil {
+	tenantUID := s.currentTenant()
+	if err := s.store.SetPlanEnabled(ctx, tenantUID, id, false, nil, time.Now().UTC()); err != nil {
 		return domain.BackupPlan{}, err
 	}
-	return s.store.Plan(ctx, s.tenantUID, id)
+	return s.store.Plan(ctx, tenantUID, id)
 }
 
 func (s *Service) Resume(ctx context.Context, id string) (domain.BackupPlan, error) {
-	plan, err := s.store.Plan(ctx, s.tenantUID, id)
+	tenantUID := s.currentTenant()
+	plan, err := s.store.Plan(ctx, tenantUID, id)
 	if err != nil {
 		return domain.BackupPlan{}, err
 	}
@@ -99,14 +137,15 @@ func (s *Service) Resume(ctx context.Context, id string) (domain.BackupPlan, err
 	if err != nil {
 		return domain.BackupPlan{}, err
 	}
-	if err := s.store.SetPlanEnabled(ctx, s.tenantUID, id, true, next, now); err != nil {
+	if err := s.store.SetPlanEnabled(ctx, tenantUID, id, true, next, now); err != nil {
 		return domain.BackupPlan{}, err
 	}
-	return s.store.Plan(ctx, s.tenantUID, id)
+	return s.store.Plan(ctx, tenantUID, id)
 }
 
 func (s *Service) Run(ctx context.Context, id string) (domain.BackupBatch, error) {
-	plan, err := s.store.Plan(ctx, s.tenantUID, id)
+	tenantUID := s.currentTenant()
+	plan, err := s.store.Plan(ctx, tenantUID, id)
 	if err != nil {
 		return domain.BackupBatch{}, err
 	}
@@ -117,7 +156,11 @@ func (s *Service) Run(ctx context.Context, id string) (domain.BackupBatch, error
 // next_run_at move is committed after every occurrence, so a restart can
 // resume without re-expanding the same plan time.
 func (s *Service) RunDue(ctx context.Context, now time.Time) error {
-	plans, err := s.store.DuePlans(ctx, s.tenantUID, now)
+	tenantUID := s.currentTenant()
+	if tenantUID == "" {
+		return nil
+	}
+	plans, err := s.store.DuePlans(ctx, tenantUID, now)
 	if err != nil {
 		return err
 	}
@@ -136,7 +179,7 @@ func (s *Service) RunDue(ctx context.Context, now time.Time) error {
 			} else if _, err := s.queue.RunPlan(ctx, plan, "scheduled", scheduled); err != nil && !errors.Is(err, domain.ErrConflict) {
 				return err
 			} else {
-				latest, lookupErr := s.store.Plan(ctx, s.tenantUID, plan.ID)
+				latest, lookupErr := s.store.Plan(ctx, tenantUID, plan.ID)
 				if lookupErr != nil {
 					return lookupErr
 				}
@@ -144,7 +187,7 @@ func (s *Service) RunDue(ctx context.Context, now time.Time) error {
 					break
 				}
 			}
-			if err := s.store.AdvancePlan(ctx, s.tenantUID, plan.ID, scheduled, next, now); err != nil {
+			if err := s.store.AdvancePlan(ctx, tenantUID, plan.ID, scheduled, next, now); err != nil {
 				return err
 			}
 			plan.LastScheduledAt, plan.NextRunAt = &scheduled, next
@@ -369,7 +412,7 @@ func (s *Service) validateTargets(ctx context.Context, plan domain.BackupPlan) e
 			return &ValidationError{Code: "INVALID_PLAN_TARGETS"}
 		}
 		seen[target.DeployID] = true
-		instance, err := s.store.Instance(ctx, s.tenantUID, target.DeployID)
+		instance, err := s.store.Instance(ctx, s.currentTenant(), target.DeployID)
 		if err != nil {
 			return err
 		}
@@ -389,7 +432,7 @@ func (s *Service) recordSkipped(ctx context.Context, plan domain.BackupPlan, sch
 		return err
 	}
 	now := time.Now().UTC()
-	return s.store.CreateBatch(ctx, domain.BackupBatch{ID: id, TenantUID: s.tenantUID, PlanID: plan.ID, PlanName: plan.Name, TriggerType: "scheduled", Status: "SKIPPED", ScheduledAt: scheduled, CreatedAt: now, FinishedAt: &now})
+	return s.store.CreateBatch(ctx, domain.BackupBatch{ID: id, TenantUID: s.currentTenant(), PlanID: plan.ID, PlanName: plan.Name, TriggerType: "scheduled", Status: "SKIPPED", ScheduledAt: scheduled, CreatedAt: now, FinishedAt: &now})
 }
 
 func nextRun(plan domain.BackupPlan, after time.Time) (*time.Time, error) {

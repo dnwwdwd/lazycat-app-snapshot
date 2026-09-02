@@ -265,6 +265,14 @@ func (s *Store) EventsAfter(ctx context.Context, tenant string, after int64, lim
 	return items, rows.Err()
 }
 
+func (s *Store) LatestEventID(ctx context.Context, tenant string) (int64, error) {
+	var id int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0) FROM event_log WHERE tenant_uid=?", tenant).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 func (s *Store) Overview(ctx context.Context, tenant string, since time.Time) (domain.Overview, error) {
 	var result domain.Overview
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*),
@@ -281,11 +289,15 @@ func (s *Store) Overview(ctx context.Context, tenant string, since time.Time) (d
 		return domain.Overview{}, err
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT
+		COUNT(*),
 		COALESCE(SUM(CASE WHEN status='QUEUED' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN status NOT IN ('QUEUED','SUCCEEDED','SUCCEEDED_WITH_WARNINGS','FAILED','CANCELLED','TIMED_OUT','SKIPPED','INTERRUPTED') THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNINGS') AND finished_at>=? THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN status IN ('FAILED','CANCELLED','TIMED_OUT','INTERRUPTED') AND finished_at>=? THEN 1 ELSE 0 END), 0)
-		FROM backup_tasks WHERE tenant_uid=?`, unix(since), unix(since), tenant).Scan(&result.QueuedTasks, &result.RunningTasks, &result.Succeeded24h, &result.Failed24h); err != nil {
+		FROM backup_tasks WHERE tenant_uid=?`, unix(since), unix(since), tenant).Scan(&result.TaskCount, &result.QueuedTasks, &result.RunningTasks, &result.Succeeded24h, &result.Failed24h); err != nil {
+		return domain.Overview{}, err
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM alerts WHERE tenant_uid=?", tenant).Scan(&result.AlertCount); err != nil {
 		return domain.Overview{}, err
 	}
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM alerts WHERE tenant_uid=? AND status='OPEN' AND read_at IS NULL", tenant).Scan(&result.UnreadAlerts); err != nil {

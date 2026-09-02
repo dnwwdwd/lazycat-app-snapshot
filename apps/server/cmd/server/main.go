@@ -22,6 +22,7 @@ import (
 	"cloud.lazycat.app.backup/apps/server/internal/scheduler"
 	"cloud.lazycat.app.backup/apps/server/internal/snapshots"
 	"cloud.lazycat.app.backup/apps/server/internal/source"
+	tenantpkg "cloud.lazycat.app.backup/apps/server/internal/tenant"
 )
 
 type config struct {
@@ -113,37 +114,41 @@ func main() {
 		provider = platform.FixtureCatalog{Path: config.FixtureCatalog}
 	}
 	service := catalog.New(store, provider, source.Resolver{Root: config.AppvarRoot, AllowNonstandardRoot: value("DEV_MODE") == "1"}, config.TenantUID, config.BackupAppID, 4)
-	backupService, err := backup.New(store, source.Resolver{Root: config.AppvarRoot, AllowNonstandardRoot: value("DEV_MODE") == "1"}, backup.Config{TenantUID: config.TenantUID, DocumentRoot: config.DocumentRoot, CacheRoot: config.CacheRoot, ManagedByQueue: true})
+	runtimeTenant := tenantpkg.New("")
+	backupService, err := backup.New(store, source.Resolver{Root: config.AppvarRoot, AllowNonstandardRoot: value("DEV_MODE") == "1"}, backup.Config{TenantUID: config.TenantUID, DocumentRoot: config.DocumentRoot, CacheRoot: config.CacheRoot, ManagedByQueue: true}, runtimeTenant)
 	if err != nil {
 		slog.Error("configure backup engine", "error", err)
 		os.Exit(1)
 	}
-	snapshotService, err := snapshots.New(store, config.DocumentRoot, config.TenantUID)
+	snapshotService, err := snapshots.New(store, config.DocumentRoot, config.TenantUID, runtimeTenant)
 	if err != nil {
 		slog.Error("configure backup library", "error", err)
 		os.Exit(1)
 	}
-	operationsService, err := operations.New(store, config.TenantUID)
+	operationsService, err := operations.New(store, config.TenantUID, platform.SDKNotifier{})
 	if err != nil {
 		slog.Error("configure operations service", "error", err)
 		os.Exit(1)
 	}
 	queueService, err := queue.New(store, backupService, queue.Config{TenantUID: config.TenantUID, OnTaskUpdated: operationsService.TaskUpdated, OnBatchUpdated: operationsService.BatchUpdated, OnScopeInvalid: func(ctx context.Context, reason domain.PlanPauseReason) {
-		_ = operationsService.Record(ctx, "plan.scope_paused", "", "plan", reason.DeployID, reason)
-		_, _ = operationsService.CreateAlert(ctx, "WARNING", "PLAN_SCOPE_INVALID", reason.Code, "备份计划已暂停", "所选目录或文件已删除、移动或类型变化，请重新选择范围后保存计划。", "application", reason.DeployID)
-	}})
+		scoped := operationsService
+		if tenantUID := runtimeTenant.UID(); tenantUID != "" {
+			scoped = operationsService.ForTenant(tenantUID)
+		}
+		_ = scoped.Record(ctx, "plan.scope_paused", "", "plan", reason.DeployID, reason)
+		_, _ = scoped.CreateAlert(ctx, "WARNING", "PLAN_SCOPE_INVALID", reason.Code, "备份计划已暂停", "所选目录或文件已删除、移动或类型变化，请重新选择范围后保存计划。", "application", reason.DeployID)
+	}}, runtimeTenant)
 	if err != nil {
 		slog.Error("configure persistent backup queue", "error", err)
 		os.Exit(1)
 	}
-	planService, err := plans.New(store, queueService, config.TenantUID)
+	planService, err := plans.New(store, queueService, config.TenantUID, runtimeTenant)
 	if err != nil {
 		slog.Error("configure backup plans", "error", err)
 		os.Exit(1)
 	}
 	scheduler.New(planService, 0).Start(context.Background())
-	service.StartSync(context.Background())
-	server := &http.Server{Addr: ":8080", Handler: httpapi.New(manager, service, filepath.Clean(config.WebRoot), backupService).SetPhase4(planService, queueService, snapshotService).SetPhase5(operationsService).Handler()}
+	server := &http.Server{Addr: ":8080", Handler: httpapi.New(manager, service, filepath.Clean(config.WebRoot), backupService).SetPhase4(planService, queueService, snapshotService).SetPhase5(operationsService).SetTenantScope(runtimeTenant).Handler()}
 	slog.Info("starting backup V1 server", "address", server.Addr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server stopped", "error", err)

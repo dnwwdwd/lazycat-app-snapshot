@@ -8,7 +8,8 @@ import (
 )
 
 // FixtureCatalog is restricted to explicit local development configuration.
-// Production keeps using SDKCatalog and never receives a browser-provided path.
+// It mirrors the production all-installed-app catalog and never receives a
+// browser-provided path.
 type FixtureCatalog struct{ Path string }
 
 func (f FixtureCatalog) List(_ context.Context, tenantUID, backupAppID string) ([]Application, error) {
@@ -26,7 +27,7 @@ func (f FixtureCatalog) List(_ context.Context, tenantUID, backupAppID string) (
 	}
 	result := make([]Application, 0, len(wrapped.Applications))
 	for _, app := range wrapped.Applications {
-		if app.OwnerUID == tenantUID && app.AppID != backupAppID {
+		if app.OwnerUID != "" && app.AppID != backupAppID {
 			result = append(result, app)
 		}
 	}

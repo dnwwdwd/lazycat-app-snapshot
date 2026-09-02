@@ -99,6 +99,7 @@ type BackupJob struct {
 	UserRole           Role        `json:"-"`
 	AppID              string      `json:"appid"`
 	ApplicationName    string      `json:"applicationName"`
+	Icon               string      `json:"icon,omitempty"`
 	ApplicationVersion string      `json:"applicationVersion,omitempty"`
 	DeployID           string      `json:"deployId"`
 	MultiInstance      bool        `json:"multiInstance"`
@@ -123,6 +124,7 @@ type Snapshot struct {
 	JobID                 string      `json:"jobId"`
 	AppID                 string      `json:"appid"`
 	ApplicationName       string      `json:"applicationName"`
+	Icon                  string      `json:"icon,omitempty"`
 	ApplicationVersion    string      `json:"applicationVersion,omitempty"`
 	DeployID              string      `json:"deployId"`
 	MultiInstance         bool        `json:"multiInstance"`
@@ -228,6 +230,9 @@ type BackupScopeCatalog struct {
 
 type PlanTarget struct {
 	DeployID           string      `json:"deployId"`
+	AppID              string      `json:"appid,omitempty"`
+	ApplicationName    string      `json:"applicationName,omitempty"`
+	Icon               string      `json:"icon,omitempty"`
 	SharedRiskAccepted bool        `json:"sharedRiskAccepted"`
 	Scope              BackupScope `json:"scope"`
 }
@@ -275,6 +280,7 @@ type BackupTask struct {
 	BackupJobID         string           `json:"backupJobId"`
 	AppID               string           `json:"appid"`
 	ApplicationName     string           `json:"applicationName"`
+	Icon                string           `json:"icon,omitempty"`
 	DeployID            string           `json:"deployId"`
 	MultiInstance       bool             `json:"multiInstance"`
 	SharedRiskAccepted  bool             `json:"sharedRiskAccepted"`
@@ -357,6 +363,15 @@ type Settings struct {
 	UpdatedAt          time.Time       `json:"updatedAt"`
 }
 
+// Notification is the platform-facing message payload. Meta is an opaque
+// JSON string; callers must keep it to safe identifiers and never include
+// source paths, credentials, or other private data.
+type Notification struct {
+	Title   string
+	Content string
+	Meta    string
+}
+
 type Alert struct {
 	ID            string     `json:"id"`
 	TenantUID     string     `json:"-"`
@@ -421,7 +436,9 @@ type Overview struct {
 	RunningTasks     int            `json:"runningTasks"`
 	Succeeded24h     int            `json:"succeeded24h"`
 	Failed24h        int            `json:"failed24h"`
+	TaskCount        int            `json:"taskCount"`
 	UnreadAlerts     int            `json:"unreadAlerts"`
+	AlertCount       int            `json:"alertCount"`
 	Storage          StorageSummary `json:"storage"`
 	NextPlans        []BackupPlan   `json:"nextPlans"`
 	RecentActivity   []AuditEntry   `json:"recentActivity"`

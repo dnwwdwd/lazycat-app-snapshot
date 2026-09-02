@@ -149,14 +149,12 @@ func (s *Store) CommitArchive(partial Partial, timestamp, deployID, suffix strin
 	if err := s.ensureWithin(partial.Archive); err != nil {
 		return Location{}, err
 	}
-	parent := timestamp
-	directory := path.Join(parent, deployID)
+	directory := path.Join(deployID, timestamp)
 	if _, err := s.resolve(directory); err != nil {
 		return Location{}, err
 	}
 	if _, err := os.Lstat(mustResolve(s, directory)); err == nil {
-		parent += "-" + suffix
-		directory = path.Join(parent, deployID)
+		directory = path.Join(deployID, timestamp+"-"+suffix)
 	}
 	if err := s.makeDirectories(directory); err != nil {
 		return Location{}, err

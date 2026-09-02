@@ -513,20 +513,25 @@ func (s *Store) ListInstances(ctx context.Context, tenant string, filter domain.
 		if instance.LastBackupAt != nil {
 			instance.ProtectionStatus = "PROTECTED"
 		}
-		findings, err := s.findings(ctx, tenant, instance.AppID, instance.DeployID)
-		if err != nil {
-			return result, err
-		}
-		instance.DatabaseFindings = findings
 		result.Items = append(result.Items, instance)
 	}
 	if err := rows.Err(); err != nil {
+		return result, err
+	}
+	if err := rows.Close(); err != nil {
 		return result, err
 	}
 	if len(result.Items) > filter.Limit {
 		last := result.Items[filter.Limit-1]
 		result.NextCursor = encodeCursor(cursorScope, strings.ToLower(last.Name), last.AppID, last.DeployID)
 		result.Items = result.Items[:filter.Limit]
+	}
+	for index := range result.Items {
+		findings, err := s.findings(ctx, tenant, result.Items[index].AppID, result.Items[index].DeployID)
+		if err != nil {
+			return result, err
+		}
+		result.Items[index].DatabaseFindings = findings
 	}
 	return result, nil
 }

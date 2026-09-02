@@ -12,15 +12,17 @@ import (
 	"cloud.lazycat.app.backup/apps/server/internal/domain"
 	"cloud.lazycat.app.backup/apps/server/internal/persistence"
 	"cloud.lazycat.app.backup/apps/server/internal/storage"
+	tenantpkg "cloud.lazycat.app.backup/apps/server/internal/tenant"
 )
 
 type Service struct {
-	store     *persistence.Store
-	storage   *storage.Store
-	tenantUID string
+	store       *persistence.Store
+	storage     *storage.Store
+	tenantUID   string
+	tenantScope *tenantpkg.Scope
 }
 
-func New(store *persistence.Store, documentRoot, tenantUID string) (*Service, error) {
+func New(store *persistence.Store, documentRoot, tenantUID string, scopes ...*tenantpkg.Scope) (*Service, error) {
 	if store == nil || tenantUID == "" {
 		return nil, errors.New("snapshot store and tenant are required")
 	}
@@ -28,11 +30,37 @@ func New(store *persistence.Store, documentRoot, tenantUID string) (*Service, er
 	if err != nil {
 		return nil, err
 	}
-	return &Service{store: store, storage: fileStore, tenantUID: tenantUID}, nil
+	tenantScope := tenantpkg.New(tenantUID)
+	initialTenant := strings.TrimSpace(tenantUID)
+	if len(scopes) > 0 && scopes[0] != nil {
+		tenantScope = scopes[0]
+		initialTenant = tenantScope.UID()
+	}
+	return &Service{store: store, storage: fileStore, tenantUID: initialTenant, tenantScope: tenantScope}, nil
+}
+
+// ForTenant keeps backup-library operations scoped to the authenticated
+// gateway identity while sharing the immutable storage adapter.
+func (s *Service) ForTenant(tenantUID string) *Service {
+	if s.tenantScope != nil {
+		_ = s.tenantScope.Bind(tenantUID)
+	}
+	clone := *s
+	clone.tenantUID = strings.TrimSpace(tenantUID)
+	return &clone
+}
+
+func (s *Service) currentTenant() string {
+	if s.tenantScope != nil {
+		if uid := s.tenantScope.UID(); uid != "" {
+			return uid
+		}
+	}
+	return strings.TrimSpace(s.tenantUID)
 }
 
 func (s *Service) Files(ctx context.Context, id string) ([]domain.SnapshotFile, error) {
-	snapshot, err := s.store.Snapshot(ctx, s.tenantUID, id)
+	snapshot, err := s.store.Snapshot(ctx, s.currentTenant(), id)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +79,8 @@ func (s *Service) Files(ctx context.Context, id string) ([]domain.SnapshotFile, 
 }
 
 func (s *Service) Verify(ctx context.Context, id string, full bool) (domain.Snapshot, error) {
-	snapshot, err := s.store.Snapshot(ctx, s.tenantUID, id)
+	tenantUID := s.currentTenant()
+	snapshot, err := s.store.Snapshot(ctx, tenantUID, id)
 	if err != nil {
 		return domain.Snapshot{}, err
 	}
@@ -66,10 +95,10 @@ func (s *Service) Verify(ctx context.Context, id string, full bool) (domain.Snap
 	}
 	now := time.Now().UTC()
 	if err != nil {
-		_ = s.store.SetSnapshotVerification(context.Background(), s.tenantUID, id, "FAILED", now)
+		_ = s.store.SetSnapshotVerification(context.Background(), tenantUID, id, "FAILED", now)
 		return domain.Snapshot{}, err
 	}
-	if err := s.store.SetSnapshotVerification(ctx, s.tenantUID, id, "VERIFIED", now); err != nil {
+	if err := s.store.SetSnapshotVerification(ctx, tenantUID, id, "VERIFIED", now); err != nil {
 		return domain.Snapshot{}, err
 	}
 	snapshot.VerificationStatus, snapshot.VerifiedAt = "VERIFIED", &now
@@ -77,7 +106,7 @@ func (s *Service) Verify(ctx context.Context, id string, full bool) (domain.Snap
 }
 
 func (s *Service) Export(ctx context.Context, id string) (string, error) {
-	snapshot, err := s.store.Snapshot(ctx, s.tenantUID, id)
+	snapshot, err := s.store.Snapshot(ctx, s.currentTenant(), id)
 	if err != nil {
 		return "", err
 	}
@@ -91,7 +120,8 @@ func (s *Service) Export(ctx context.Context, id string) (string, error) {
 }
 
 func (s *Service) Delete(ctx context.Context, id string) (domain.Snapshot, error) {
-	snapshot, err := s.store.Snapshot(ctx, s.tenantUID, id)
+	tenantUID := s.currentTenant()
+	snapshot, err := s.store.Snapshot(ctx, tenantUID, id)
 	if err != nil {
 		return domain.Snapshot{}, err
 	}
@@ -103,7 +133,7 @@ func (s *Service) Delete(ctx context.Context, id string) (domain.Snapshot, error
 		return domain.Snapshot{}, err
 	}
 	now := time.Now().UTC()
-	if err := s.store.MarkSnapshotTrashed(ctx, s.tenantUID, id, location.Directory, now); err != nil {
+	if err := s.store.MarkSnapshotTrashed(ctx, tenantUID, id, location.Directory, now); err != nil {
 		return domain.Snapshot{}, err
 	}
 	snapshot.StoragePath, snapshot.RetentionStatus, snapshot.Status, snapshot.TrashedAt = location.Directory, "TRASHED", "TRASHED", &now
@@ -111,7 +141,7 @@ func (s *Service) Delete(ctx context.Context, id string) (domain.Snapshot, error
 }
 
 func (s *Service) Summary(ctx context.Context) (domain.StorageSummary, error) {
-	items, err := s.store.AllSnapshots(ctx, s.tenantUID)
+	items, err := s.store.AllSnapshots(ctx, s.currentTenant())
 	if err != nil {
 		return domain.StorageSummary{}, err
 	}
@@ -144,7 +174,8 @@ func (s *Service) Summary(ctx context.Context) (domain.StorageSummary, error) {
 // Scan verifies current control-library records against the current user's
 // document root. It never scans or reconciles source appvar paths.
 func (s *Service) Scan(ctx context.Context) (domain.StorageSummary, error) {
-	items, err := s.store.AllSnapshots(ctx, s.tenantUID)
+	tenantUID := s.currentTenant()
+	items, err := s.store.AllSnapshots(ctx, tenantUID)
 	if err != nil {
 		return domain.StorageSummary{}, err
 	}
@@ -153,7 +184,7 @@ func (s *Service) Scan(ctx context.Context) (domain.StorageSummary, error) {
 			continue
 		}
 		if err := s.storage.QuickVerify(storage.Location{Directory: item.StoragePath}, item.ArchiveSize, item.ArchiveSHA256); err != nil {
-			_ = s.store.SetSnapshotVerification(context.Background(), s.tenantUID, item.ID, "FAILED", time.Now().UTC())
+			_ = s.store.SetSnapshotVerification(context.Background(), tenantUID, item.ID, "FAILED", time.Now().UTC())
 		}
 	}
 	return s.Summary(ctx)
@@ -174,7 +205,7 @@ func (s *Service) Cleanup(ctx context.Context) (CleanupResult, error) {
 	if err != nil {
 		return CleanupResult{}, err
 	}
-	_, _ = s.store.DeleteTrashedBefore(ctx, s.tenantUID, now.Add(-7*24*time.Hour))
+	_, _ = s.store.DeleteTrashedBefore(ctx, s.currentTenant(), now.Add(-7*24*time.Hour))
 	return CleanupResult{PartialRemoved: partial, TrashRemoved: trash}, nil
 }
 
@@ -182,7 +213,8 @@ func (s *Service) ApplyRetentionForTask(ctx context.Context, task domain.BackupT
 	if task.PlanID == "" || strings.HasPrefix(task.PlanID, "manual-") {
 		return nil
 	}
-	plan, err := s.store.Plan(ctx, s.tenantUID, task.PlanID)
+	tenantUID := s.currentTenant()
+	plan, err := s.store.Plan(ctx, tenantUID, task.PlanID)
 	if err != nil {
 		return err
 	}
@@ -190,7 +222,8 @@ func (s *Service) ApplyRetentionForTask(ctx context.Context, task domain.BackupT
 }
 
 func (s *Service) ApplyRetention(ctx context.Context, plan domain.BackupPlan) error {
-	items, err := s.store.SnapshotsForPlan(ctx, s.tenantUID, plan.ID)
+	tenantUID := s.currentTenant()
+	items, err := s.store.SnapshotsForPlan(ctx, tenantUID, plan.ID)
 	if err != nil {
 		return err
 	}

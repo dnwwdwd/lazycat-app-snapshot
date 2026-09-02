@@ -12,6 +12,52 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// decoratePlanTargets attaches the current catalog metadata to plan responses.
+// Targets are persisted by deploy_id only, so a plan remains stable while the
+// display can still use the real application name and icon when the catalog
+// page is not currently loaded in the browser.
+func (s *Server) decoratePlanTargets(r *http.Request, plan *domain.BackupPlan) {
+	if s.catalog == nil || plan == nil {
+		return
+	}
+	catalogService := s.catalogFor(r)
+	for index := range plan.Targets {
+		instance, err := catalogService.Instance(r.Context(), plan.Targets[index].DeployID)
+		if err != nil {
+			continue
+		}
+		plan.Targets[index].AppID = instance.AppID
+		plan.Targets[index].ApplicationName = instance.Name
+		plan.Targets[index].Icon = instance.Icon
+	}
+}
+
+func (s *Server) decorateTask(r *http.Request, task *domain.BackupTask) {
+	if s.catalog == nil || task == nil {
+		return
+	}
+	instance, err := s.catalogFor(r).Instance(r.Context(), task.DeployID)
+	if err != nil {
+		return
+	}
+	task.AppID = instance.AppID
+	task.ApplicationName = instance.Name
+	task.Icon = instance.Icon
+}
+
+func (s *Server) decorateSnapshot(r *http.Request, snapshot *domain.Snapshot) {
+	if s.catalog == nil || snapshot == nil {
+		return
+	}
+	instance, err := s.catalogFor(r).Instance(r.Context(), snapshot.DeployID)
+	if err != nil {
+		return
+	}
+	snapshot.AppID = instance.AppID
+	snapshot.ApplicationName = instance.Name
+	snapshot.Icon = instance.Icon
+}
+
 func (s *Server) listPlans(w http.ResponseWriter, r *http.Request) {
 	if s.plans == nil {
 		phase4Unavailable(w, r)
@@ -21,6 +67,9 @@ func (s *Server) listPlans(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		phase4Error(w, r, err)
 		return
+	}
+	for index := range items {
+		s.decoratePlanTargets(r, &items[index])
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -54,6 +103,7 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 		phase4Error(w, r, err)
 		return
 	}
+	s.decoratePlanTargets(r, &plan)
 	writeJSON(w, http.StatusOK, plan)
 }
 
@@ -161,6 +211,9 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		phase4Error(w, r, err)
 		return
 	}
+	for index := range page.Items {
+		s.decorateTask(r, &page.Items[index])
+	}
 	writeJSON(w, http.StatusOK, page)
 }
 
@@ -174,6 +227,7 @@ func (s *Server) task(w http.ResponseWriter, r *http.Request) {
 		phase4Error(w, r, err)
 		return
 	}
+	s.decorateTask(r, &task)
 	writeJSON(w, http.StatusOK, map[string]any{"task": task, "attempts": attempts})
 }
 
@@ -257,7 +311,7 @@ func (s *Server) scanStorage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditRequest(r, "storage.scanned", "storage", "current")
 	if s.operations != nil {
-		_ = s.operations.Publish(r.Context(), "storage.updated", map[string]string{"action": "scan"})
+		_ = s.operationsFor(r).Publish(r.Context(), "storage.updated", map[string]string{"action": "scan"})
 	}
 	writeJSON(w, http.StatusOK, value)
 }

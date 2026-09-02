@@ -374,7 +374,7 @@ paths:
           schema: { type: integer, minimum: 0 }
       responses:
         '200':
-          description: Current-tenant event stream. REST remains authoritative after reconnect.
+          description: Current-tenant event stream. A new stream without a cursor starts at the current event head and emits `stream.ready`; reconnecting clients pass `after` to receive missed events. REST remains authoritative after reconnect.
           content: { text/event-stream: { schema: { type: string } } }
 components:
   securitySchemes:
@@ -413,7 +413,7 @@ components:
         identityVerified: { type: boolean }
     CapabilityStatus:
       type: string
-      enum: [BACKUPABLE, BACKUPABLE_SHARED_WARNING, NO_DATA, UNSUPPORTED_DATABASE, SOURCE_MAPPING_AMBIGUOUS, SOURCE_NOT_READY, SOURCE_PERMISSION_DENIED, SOURCE_INSTANCE_NOT_FOUND, SOURCE_OWNER_MISMATCH, RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE, PROBE_FAILED]
+      enum: [BACKUPABLE, BACKUPABLE_SHARED_WARNING, NO_DATA, UNSUPPORTED_DATABASE, SYSTEM_UNSUPPORTED, SOURCE_MAPPING_AMBIGUOUS, SOURCE_NOT_READY, SOURCE_PERMISSION_DENIED, SOURCE_INSTANCE_NOT_FOUND, SOURCE_OWNER_MISMATCH, RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE, PROBE_FAILED]
     DatabaseFinding:
       type: object
       required: [type, path, supported]
@@ -488,6 +488,7 @@ components:
         id: { type: string }
         appid: { type: string }
         applicationName: { type: string }
+        icon: { type: string, format: uri, description: Lazycat catalog application icon URL }
         applicationVersion: { type: string }
         deployId: { type: string }
         multiInstance: { type: boolean }
@@ -518,6 +519,7 @@ components:
         jobId: { type: string }
         appid: { type: string }
         applicationName: { type: string }
+        icon: { type: string, format: uri, description: Lazycat catalog application icon URL }
         applicationVersion: { type: string }
         deployId: { type: string }
         multiInstance: { type: boolean }
@@ -556,6 +558,9 @@ components:
       required: [deployId]
       properties:
         deployId: { type: string }
+        appid: { type: string, description: Application identifier resolved from the current application catalog. }
+        applicationName: { type: string, description: Display metadata resolved from the current application catalog. }
+        icon: { type: string, format: uri, description: Lazycat catalog application icon URL }
         sharedRiskAccepted: { type: boolean, deprecated: true, description: Compatibility metadata; it does not gate plan creation. }
         scope: { $ref: '#/components/schemas/BackupScope' }
     BackupScope:
@@ -676,6 +681,7 @@ components:
         backupJobId: { type: string }
         appid: { type: string }
         applicationName: { type: string }
+        icon: { type: string, format: uri, description: Lazycat catalog application icon URL }
         deployId: { type: string }
         multiInstance: { type: boolean }
         sharedRiskAccepted: { type: boolean }
@@ -815,7 +821,7 @@ components:
         nextCursor: { type: string }
     Overview:
       type: object
-      required: [applicationCount, backupableCount, protectedCount, unprotectedCount, unsupportedCount, noDataCount, queuedTasks, runningTasks, succeeded24h, failed24h, unreadAlerts, storage, nextPlans, recentActivity]
+      required: [applicationCount, backupableCount, protectedCount, unprotectedCount, unsupportedCount, noDataCount, queuedTasks, runningTasks, succeeded24h, failed24h, taskCount, unreadAlerts, alertCount, storage, nextPlans, recentActivity]
       properties:
         applicationCount: { type: integer }
         backupableCount: { type: integer }
@@ -827,7 +833,9 @@ components:
         runningTasks: { type: integer }
         succeeded24h: { type: integer }
         failed24h: { type: integer }
+        taskCount: { type: integer, description: Total task records for the current tenant, independent of pagination. }
         unreadAlerts: { type: integer }
+        alertCount: { type: integer, description: Total alert records for the current tenant, independent of pagination. }
         storage: { $ref: '#/components/schemas/StorageSummary' }
         nextPlans: { type: array, items: { $ref: '#/components/schemas/BackupPlan' } }
         recentActivity: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } }

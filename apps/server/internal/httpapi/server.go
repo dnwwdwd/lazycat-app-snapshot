@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"cloud.lazycat.app.backup/apps/server/internal/auth"
 	"cloud.lazycat.app.backup/apps/server/internal/backup"
@@ -23,18 +24,20 @@ import (
 	"cloud.lazycat.app.backup/apps/server/internal/plans"
 	"cloud.lazycat.app.backup/apps/server/internal/queue"
 	"cloud.lazycat.app.backup/apps/server/internal/snapshots"
+	tenantpkg "cloud.lazycat.app.backup/apps/server/internal/tenant"
 	"github.com/go-chi/chi/v5"
 )
 
 type Server struct {
-	auth       *auth.Manager
-	catalog    *catalog.Service
-	backups    *backup.Service
-	plans      *plans.Service
-	queue      *queue.Service
-	snapshots  *snapshots.Service
-	operations *operations.Service
-	staticRoot string
+	auth        *auth.Manager
+	catalog     *catalog.Service
+	backups     *backup.Service
+	plans       *plans.Service
+	queue       *queue.Service
+	snapshots   *snapshots.Service
+	operations  *operations.Service
+	tenantScope *tenantpkg.Scope
+	staticRoot  string
 }
 
 // SetPhase4 wires the persisted schedule, queue and backup-library services
@@ -48,6 +51,14 @@ func (s *Server) SetPhase4(planService *plans.Service, queueService *queue.Servi
 // constructor call sites usable in focused compilation environments.
 func (s *Server) SetPhase5(operationsService *operations.Service) *Server {
 	s.operations = operationsService
+	return s
+}
+
+// SetTenantScope connects authenticated HTTP requests to the background
+// scheduler's process-local user binding. It is optional for focused server
+// constructions that do not start background work.
+func (s *Server) SetTenantScope(scope *tenantpkg.Scope) *Server {
+	s.tenantScope = scope
 	return s
 }
 
@@ -71,6 +82,7 @@ func (s *Server) Handler() http.Handler {
 	router.Get("/auth/oidc/callback", s.callback)
 	router.Get("/auth/error", s.authError)
 	router.Group(func(r chi.Router) {
+		r.Use(apiReadTimeout)
 		r.Use(s.requireAPI)
 		r.Get("/api/session", s.session)
 		r.Post("/auth/logout", s.logout)
@@ -116,6 +128,29 @@ func (s *Server) Handler() http.Handler {
 	return router
 }
 
+const apiReadTimeoutDuration = 12 * time.Second
+
+func apiReadTimeout(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path == "/api/events" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		body, _ := json.Marshal(errorBody{
+			Code:      "REQUEST_TIMEOUT",
+			Message:   "请求等待超时，请重新加载。",
+			RequestID: requestIDFrom(r.Context()),
+		})
+		http.TimeoutHandler(
+			next,
+			apiReadTimeoutDuration,
+			string(body),
+		).ServeHTTP(w, r)
+	})
+}
+
 type contextKey string
 
 const sessionKey contextKey = "session"
@@ -138,6 +173,13 @@ func (s *Server) requireAPI(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		session, err := s.auth.Session(r.Context(), r)
 		if err == nil {
+			if s.tenantScope != nil {
+				if bindErr := s.tenantScope.Bind(session.GatewayUID); bindErr != nil {
+					auth.ClearSessionCookie(w)
+					errorJSON(w, r, http.StatusForbidden, "IDENTITY_MISMATCH", "当前登录会话与懒猫账号不一致")
+					return
+				}
+			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), sessionKey, session)))
 			return
 		}
@@ -221,6 +263,12 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		s.authErrorCode(w, r, http.StatusBadRequest, "OIDC_CALLBACK_FAILED", "OIDC 登录验证失败")
 		return
 	}
+	if s.tenantScope != nil {
+		if bindErr := s.tenantScope.Bind(session.GatewayUID); bindErr != nil {
+			s.authErrorCode(w, r, http.StatusForbidden, "IDENTITY_MISMATCH", "当前登录会话与懒猫账号不一致")
+			return
+		}
+	}
 	auth.SetSessionCookie(w, rawID, session.ExpiresAt)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -254,6 +302,21 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) catalogFor(r *http.Request) *catalog.Service {
+	current := r.Context().Value(sessionKey).(domain.Session)
+	return s.catalog.ForSession(current.GatewayUID, current.Role)
+}
+
+func (s *Server) operationsFor(r *http.Request) *operations.Service {
+	current := r.Context().Value(sessionKey).(domain.Session)
+	return s.operations.ForTenant(current.GatewayUID)
+}
+
+func (s *Server) snapshotsFor(r *http.Request) *snapshots.Service {
+	current := r.Context().Value(sessionKey).(domain.Session)
+	return s.snapshots.ForTenant(current.GatewayUID)
+}
+
 func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
 	limit := 50
 	if raw := r.URL.Query().Get("limit"); raw != "" {
@@ -269,7 +332,25 @@ func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, r, http.StatusBadRequest, "INVALID_MODE", "实例模式无效")
 		return
 	}
-	page, err := s.catalog.List(r.Context(), filter)
+	catalogService := s.catalogFor(r)
+	syncStatus, err := catalogService.SyncStatus(r.Context())
+	if err != nil {
+		errorJSON(w, r, http.StatusInternalServerError, "SYNC_STATUS_UNAVAILABLE", "无法读取同步状态")
+		return
+	}
+	started, err := catalogService.StartInitialSyncWithStatus(r.Context())
+	if err != nil {
+		errorJSON(w, r, http.StatusInternalServerError, "SYNC_START_FAILED", "无法启动应用目录同步")
+		return
+	}
+	if !started && syncStatus.State == "IDLE" {
+		started, err = catalogService.StartSyncWithStatus(r.Context())
+		if err != nil {
+			errorJSON(w, r, http.StatusInternalServerError, "SYNC_START_FAILED", "无法启动应用目录同步")
+			return
+		}
+	}
+	page, err := catalogService.List(r.Context(), filter)
 	if err != nil {
 		if errors.Is(err, domain.ErrInvalidCursor) {
 			errorJSON(w, r, http.StatusBadRequest, "INVALID_CURSOR", "分页游标无效")
@@ -278,7 +359,7 @@ func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	syncStatus, err := s.catalog.SyncStatus(r.Context())
+	syncStatus, err = catalogService.SyncStatus(r.Context())
 	if err != nil {
 		errorJSON(w, r, http.StatusInternalServerError, "SYNC_STATUS_UNAVAILABLE", "无法读取同步状态")
 		return
@@ -286,12 +367,21 @@ func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": page.Items, "nextCursor": page.NextCursor, "sync": syncStatus})
 }
 func (s *Server) syncApplications(w http.ResponseWriter, r *http.Request) {
-	started := s.catalog.StartSync(r.Context())
-	status, _ := s.catalog.SyncStatus(r.Context())
+	catalogService := s.catalogFor(r)
+	started, err := catalogService.StartSyncWithStatus(r.Context())
+	if err != nil {
+		errorJSON(w, r, http.StatusInternalServerError, "SYNC_START_FAILED", "无法启动应用目录同步")
+		return
+	}
+	status, err := catalogService.SyncStatus(r.Context())
+	if err != nil {
+		errorJSON(w, r, http.StatusInternalServerError, "SYNC_STATUS_UNAVAILABLE", "无法读取同步状态")
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "started": started, "sync": status})
 }
 func (s *Server) application(w http.ResponseWriter, r *http.Request) {
-	items, err := s.catalog.App(r.Context(), chi.URLParam(r, "appid"))
+	items, err := s.catalogFor(r).App(r.Context(), chi.URLParam(r, "appid"))
 	if errors.Is(err, domain.ErrNotFound) {
 		errorJSON(w, r, http.StatusNotFound, "RESOURCE_NOT_FOUND", "应用不存在")
 		return
@@ -303,7 +393,7 @@ func (s *Server) application(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"appid": items[0].AppID, "name": items[0].Name, "version": items[0].Version, "instances": items})
 }
 func (s *Server) instance(w http.ResponseWriter, r *http.Request) {
-	item, err := s.catalog.Instance(r.Context(), chi.URLParam(r, "deployID"))
+	item, err := s.catalogFor(r).Instance(r.Context(), chi.URLParam(r, "deployID"))
 	if errors.Is(err, domain.ErrNotFound) {
 		errorJSON(w, r, http.StatusNotFound, "RESOURCE_NOT_FOUND", "应用实例不存在")
 		return
@@ -341,15 +431,24 @@ func (s *Server) backupScope(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, value)
 }
 func (s *Server) probeInstance(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.catalog.Instance(r.Context(), chi.URLParam(r, "deployID")); errors.Is(err, domain.ErrNotFound) {
+	catalogService := s.catalogFor(r)
+	if _, err := catalogService.Instance(r.Context(), chi.URLParam(r, "deployID")); errors.Is(err, domain.ErrNotFound) {
 		errorJSON(w, r, http.StatusNotFound, "RESOURCE_NOT_FOUND", "应用实例不存在")
 		return
 	} else if err != nil {
 		errorJSON(w, r, http.StatusInternalServerError, "INSTANCE_LOOKUP_FAILED", "无法读取应用实例")
 		return
 	}
-	started := s.catalog.StartSync(r.Context())
-	status, _ := s.catalog.SyncStatus(r.Context())
+	started, err := catalogService.StartSyncWithStatus(r.Context())
+	if err != nil {
+		errorJSON(w, r, http.StatusInternalServerError, "SYNC_START_FAILED", "无法启动应用目录同步")
+		return
+	}
+	status, err := catalogService.SyncStatus(r.Context())
+	if err != nil {
+		errorJSON(w, r, http.StatusInternalServerError, "SYNC_STATUS_UNAVAILABLE", "无法读取同步状态")
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "started": started, "sync": status})
 }
 
@@ -426,6 +525,9 @@ func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, r, http.StatusInternalServerError, "BACKUP_LIST_UNAVAILABLE", "无法读取备份快照")
 		return
 	}
+	for index := range page.Items {
+		s.decorateSnapshot(r, &page.Items[index])
+	}
 	writeJSON(w, http.StatusOK, page)
 }
 
@@ -439,6 +541,7 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 		s.backupError(w, r, err)
 		return
 	}
+	s.decorateSnapshot(r, &item)
 	writeJSON(w, http.StatusOK, item)
 }
 
@@ -447,14 +550,14 @@ func (s *Server) verifySnapshot(w http.ResponseWriter, r *http.Request) {
 		item, err := s.snapshots.Verify(r.Context(), chi.URLParam(r, "snapshotID"), r.URL.Query().Get("mode") == "full")
 		if err != nil {
 			if s.operations != nil {
-				_, _ = s.operations.CreateAlert(r.Context(), "WARNING", "SNAPSHOT_VERIFICATION", "SNAPSHOT_VERIFICATION_FAILED", "快照校验未通过", "快照校验未完成，请检查网盘状态。", "snapshot", chi.URLParam(r, "snapshotID"))
+				_, _ = s.operationsFor(r).CreateAlert(r.Context(), "WARNING", "SNAPSHOT_VERIFICATION", "SNAPSHOT_VERIFICATION_FAILED", "快照校验未通过", "快照校验未完成，请检查网盘状态。", "snapshot", chi.URLParam(r, "snapshotID"))
 			}
 			phase4Error(w, r, err)
 			return
 		}
 		s.auditRequest(r, "snapshot.verified", "snapshot", item.ID)
 		if s.operations != nil {
-			_ = s.operations.Publish(r.Context(), "snapshot.updated", map[string]string{"snapshotId": item.ID, "verificationStatus": item.VerificationStatus})
+			_ = s.operationsFor(r).Publish(r.Context(), "snapshot.updated", map[string]string{"snapshotId": item.ID, "verificationStatus": item.VerificationStatus})
 		}
 		writeJSON(w, http.StatusOK, item)
 		return
@@ -503,6 +606,7 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	if requested != "" && !strings.HasPrefix(requested, ".."+string(filepath.Separator)) {
 		candidate := filepath.Join(s.staticRoot, requested)
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			setStaticCacheHeaders(w, requested)
 			http.ServeFile(w, r, candidate)
 			return
 		}
@@ -512,7 +616,20 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	http.ServeFile(w, r, index)
+}
+
+func setStaticCacheHeaders(w http.ResponseWriter, requested string) {
+	if requested == "index.html" {
+		w.Header().Set("Cache-Control", "no-store")
+		return
+	}
+	if strings.HasPrefix(requested, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
 }
 
 // loginIcon stays public so the unauthenticated OIDC login page can load its
@@ -529,6 +646,7 @@ type errorBody struct {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)

@@ -21,6 +21,11 @@ import (
 
 const maxEntries = 100000
 
+// ErrEntryLimitExceeded identifies a source that exceeds the bounded scanner
+// limit. Callers use it to distinguish a known source limitation from an
+// unexpected probe failure.
+var ErrEntryLimitExceeded = errors.New("source entry limit exceeded")
+
 type Result struct {
 	CapabilityStatus string
 	TotalBytes       int64
@@ -247,7 +252,7 @@ func BuildPlan(ctx context.Context, resolved source.Resolved, multiInstance bool
 		}
 		seen++
 		if seen > maxEntries {
-			return errors.New("source contains too many entries")
+			return ErrEntryLimitExceeded
 		}
 		relative, err := filepath.Rel(resolved.Root, path)
 		if err != nil {

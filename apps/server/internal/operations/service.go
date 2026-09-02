@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -19,13 +20,34 @@ import (
 type Service struct {
 	store     *persistence.Store
 	tenantUID string
+	notifier  Notifier
 }
 
-func New(store *persistence.Store, tenantUID string) (*Service, error) {
+// Notifier sends a platform message to the supplied current-tenant user. It
+// is optional so local development and platforms without user.notify keep the
+// backup and in-app alert flows working.
+type Notifier interface {
+	Notify(context.Context, string, domain.Notification) error
+}
+
+func New(store *persistence.Store, tenantUID string, notifiers ...Notifier) (*Service, error) {
 	if store == nil || tenantUID == "" {
 		return nil, errors.New("operations store and tenant are required")
 	}
-	return &Service{store: store, tenantUID: tenantUID}, nil
+	var notifier Notifier
+	if len(notifiers) > 0 {
+		notifier = notifiers[0]
+	}
+	return &Service{store: store, tenantUID: tenantUID, notifier: notifier}, nil
+}
+
+// ForTenant binds operational reads and writes to the authenticated gateway
+// identity. The process startup value is the backup application's deployment
+// scope and must not be used as a user tenant for browser requests.
+func (s *Service) ForTenant(tenantUID string) *Service {
+	clone := *s
+	clone.tenantUID = tenantUID
+	return &clone
 }
 
 func (s *Service) Overview(ctx context.Context) (domain.Overview, error) {
@@ -178,18 +200,81 @@ func (s *Service) EventsAfter(ctx context.Context, after int64) ([]domain.Event,
 	return s.store.EventsAfter(ctx, s.tenantUID, after, 100)
 }
 
+func (s *Service) LatestEventID(ctx context.Context) (int64, error) {
+	return s.store.LatestEventID(ctx, s.tenantUID)
+}
+
 func (s *Service) TaskUpdated(ctx context.Context, task domain.BackupTask) {
-	_ = s.Publish(ctx, "task.updated", map[string]string{"taskId": task.ID, "batchId": task.BatchID, "status": task.Status})
+	scoped := s
+	if tenantUID := strings.TrimSpace(task.TenantUID); tenantUID != "" && tenantUID != s.tenantUID {
+		scoped = s.ForTenant(tenantUID)
+	}
+	_ = scoped.Publish(ctx, "task.updated", map[string]string{
+		"taskId":          task.ID,
+		"batchId":         task.BatchID,
+		"status":          task.Status,
+		"appid":           task.AppID,
+		"deployId":        task.DeployID,
+		"applicationName": task.ApplicationName,
+	})
 	if task.Status == "SUCCEEDED" || task.Status == "SUCCEEDED_WITH_WARNINGS" || task.Status == "FAILED" || task.Status == "TIMED_OUT" || task.Status == "CANCELLED" || task.Status == "SKIPPED" {
-		_ = s.Record(ctx, "task."+strings.ToLower(task.Status), "", "task", task.ID, map[string]string{"status": task.Status, "code": task.ErrorCode})
+		_ = scoped.Record(ctx, "task."+strings.ToLower(task.Status), "", "task", task.ID, map[string]string{"status": task.Status, "code": task.ErrorCode})
+	}
+	if task.Status == "SUCCEEDED" || task.Status == "SUCCEEDED_WITH_WARNINGS" {
+		scoped.notifyTask(ctx, task, true)
 	}
 	if task.Status == "FAILED" || task.Status == "TIMED_OUT" {
-		_, _ = s.CreateAlert(ctx, "WARNING", "TASK_FAILURE", task.ErrorCode, "备份任务未完成", "备份任务失败，可查看任务详情后重试。", "task", task.ID)
+		scoped.notifyTask(ctx, task, false)
+		_, _ = scoped.CreateAlert(ctx, "WARNING", "TASK_FAILURE", task.ErrorCode, "备份任务未完成", "备份任务失败，可查看任务详情后重试。", "task", task.ID)
+	}
+}
+
+func (s *Service) notifyTask(ctx context.Context, task domain.BackupTask, succeeded bool) {
+	if s.notifier == nil {
+		return
+	}
+	settings, err := s.Settings(ctx)
+	if err != nil {
+		slog.Warn("read notification settings", "error", err)
+		return
+	}
+	if (succeeded && !settings.NotifySuccess) || (!succeeded && !settings.NotifyFirstFailure) {
+		return
+	}
+	name := strings.TrimSpace(task.ApplicationName)
+	if name == "" {
+		name = strings.TrimSpace(task.AppID)
+	}
+	if name == "" {
+		name = task.DeployID
+	}
+	status := task.Status
+	title, content := "备份成功", fmt.Sprintf("应用「%s」的备份已完成。", name)
+	if !succeeded {
+		title = "备份失败"
+		content = fmt.Sprintf("应用「%s」的备份未完成，请查看任务详情。", name)
+	}
+	meta, err := json.Marshal(map[string]string{
+		"taskId": task.ID, "batchId": task.BatchID, "deployId": task.DeployID,
+		"appid": task.AppID, "status": status,
+	})
+	if err != nil {
+		slog.Warn("encode notification metadata", "error", err)
+		return
+	}
+	if err := s.notifier.Notify(ctx, s.tenantUID, domain.Notification{Title: title, Content: content, Meta: string(meta)}); err != nil {
+		// user.notify is optional. A denied/unavailable platform message must
+		// never turn an already committed backup result into a failed task.
+		slog.Warn("send platform notification", "error", err)
 	}
 }
 
 func (s *Service) BatchUpdated(ctx context.Context, batch domain.BackupBatch) {
-	_ = s.Publish(ctx, "batch.updated", map[string]string{"batchId": batch.ID, "status": batch.Status})
+	scoped := s
+	if tenantUID := strings.TrimSpace(batch.TenantUID); tenantUID != "" && tenantUID != s.tenantUID {
+		scoped = s.ForTenant(tenantUID)
+	}
+	_ = scoped.Publish(ctx, "batch.updated", map[string]string{"batchId": batch.ID, "status": batch.Status})
 }
 
 type ValidationError struct{ Code string }

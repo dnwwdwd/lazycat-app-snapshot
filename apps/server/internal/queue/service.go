@@ -16,6 +16,7 @@ import (
 	"cloud.lazycat.app.backup/apps/server/internal/backup"
 	"cloud.lazycat.app.backup/apps/server/internal/domain"
 	"cloud.lazycat.app.backup/apps/server/internal/persistence"
+	tenantpkg "cloud.lazycat.app.backup/apps/server/internal/tenant"
 )
 
 type Config struct {
@@ -38,13 +39,15 @@ type Service struct {
 	workerID       string
 	mu             sync.Mutex
 	cancelByID     map[string]context.CancelFunc
+	requeued       map[string]bool
 	afterSucceeded func(context.Context, domain.BackupTask) error
 	onTaskUpdated  func(context.Context, domain.BackupTask)
 	onBatchUpdated func(context.Context, domain.BackupBatch)
 	onScopeInvalid func(context.Context, domain.PlanPauseReason)
+	tenantScope    *tenantpkg.Scope
 }
 
-func New(store *persistence.Store, backups *backup.Service, config Config) (*Service, error) {
+func New(store *persistence.Store, backups *backup.Service, config Config, scopes ...*tenantpkg.Scope) (*Service, error) {
 	if store == nil || backups == nil || config.TenantUID == "" {
 		return nil, errors.New("queue store, backup engine and tenant are required")
 	}
@@ -64,9 +67,18 @@ func New(store *persistence.Store, backups *backup.Service, config Config) (*Ser
 	if err != nil {
 		return nil, err
 	}
-	service := &Service{store: store, backups: backups, tenantUID: config.TenantUID, lease: config.LeaseDuration, poll: config.PollInterval, workerID: workerID, cancelByID: map[string]context.CancelFunc{}, afterSucceeded: config.AfterSucceeded, onTaskUpdated: config.OnTaskUpdated, onBatchUpdated: config.OnBatchUpdated, onScopeInvalid: config.OnScopeInvalid}
-	if err := store.RequeueExpiredTasks(context.Background(), config.TenantUID, time.Now().UTC()); err != nil {
-		return nil, fmt.Errorf("recover expired task leases: %w", err)
+	tenantScope := tenantpkg.New(config.TenantUID)
+	initialTenant := strings.TrimSpace(config.TenantUID)
+	if len(scopes) > 0 && scopes[0] != nil {
+		tenantScope = scopes[0]
+		initialTenant = tenantScope.UID()
+	}
+	service := &Service{store: store, backups: backups, tenantUID: initialTenant, lease: config.LeaseDuration, poll: config.PollInterval, workerID: workerID, cancelByID: map[string]context.CancelFunc{}, requeued: map[string]bool{}, afterSucceeded: config.AfterSucceeded, onTaskUpdated: config.OnTaskUpdated, onBatchUpdated: config.OnBatchUpdated, onScopeInvalid: config.OnScopeInvalid, tenantScope: tenantScope}
+	if initialTenant != "" {
+		if err := store.RequeueExpiredTasks(context.Background(), initialTenant, time.Now().UTC()); err != nil {
+			return nil, fmt.Errorf("recover expired task leases: %w", err)
+		}
+		service.requeued[initialTenant] = true
 	}
 	for index := 0; index < config.Workers; index++ {
 		go service.worker(index)
@@ -74,8 +86,36 @@ func New(store *persistence.Store, backups *backup.Service, config Config) (*Ser
 	return service, nil
 }
 
+// ForTenant binds queue operations to the authenticated gateway UID. The
+// shared scope lets the already-running scheduler and workers process the same
+// tenant instead of the application deployment UID from the environment.
+func (s *Service) ForTenant(tenantUID string) *Service {
+	if s == nil {
+		return nil
+	}
+	if s.tenantScope != nil {
+		_ = s.tenantScope.Bind(tenantUID)
+	}
+	clone := *s
+	clone.tenantUID = strings.TrimSpace(tenantUID)
+	if s.backups != nil {
+		clone.backups = s.backups.ForTenant(tenantUID)
+	}
+	return &clone
+}
+
+func (s *Service) currentTenant() string {
+	if s.tenantScope != nil {
+		if uid := s.tenantScope.UID(); uid != "" {
+			return uid
+		}
+	}
+	return strings.TrimSpace(s.tenantUID)
+}
+
 func (s *Service) StartManual(ctx context.Context, deployID string, sharedRiskAccepted bool, subject string, role domain.Role) (domain.BackupJob, error) {
-	instance, err := s.store.Instance(ctx, s.tenantUID, deployID)
+	tenantUID := s.currentTenant()
+	instance, err := s.store.Instance(ctx, tenantUID, deployID)
 	if err != nil {
 		return domain.BackupJob{}, err
 	}
@@ -84,7 +124,7 @@ func (s *Service) StartManual(ctx context.Context, deployID string, sharedRiskAc
 	if err != nil {
 		return domain.BackupJob{}, err
 	}
-	batch := domain.BackupBatch{ID: batchID, TenantUID: s.tenantUID, PlanID: "manual-" + batchID, PlanName: "手动备份", TriggerType: "manual", Status: "QUEUED", ScheduledAt: now, CreatedAt: now}
+	batch := domain.BackupBatch{ID: batchID, TenantUID: tenantUID, PlanID: "manual-" + batchID, PlanName: "手动备份", TriggerType: "manual", Status: "QUEUED", ScheduledAt: now, CreatedAt: now}
 	if err := s.store.CreateBatch(ctx, batch); err != nil {
 		return domain.BackupJob{}, err
 	}
@@ -103,7 +143,8 @@ func (s *Service) RunPlan(ctx context.Context, plan domain.BackupPlan, trigger s
 	if err != nil {
 		return domain.BackupBatch{}, err
 	}
-	batch := domain.BackupBatch{ID: batchID, TenantUID: s.tenantUID, PlanID: plan.ID, PlanName: plan.Name, TriggerType: trigger, Status: "QUEUED", ScheduledAt: scheduledAt.UTC(), CreatedAt: time.Now().UTC()}
+	tenantUID := s.currentTenant()
+	batch := domain.BackupBatch{ID: batchID, TenantUID: tenantUID, PlanID: plan.ID, PlanName: plan.Name, TriggerType: trigger, Status: "QUEUED", ScheduledAt: scheduledAt.UTC(), CreatedAt: time.Now().UTC()}
 	if err := s.store.CreateBatch(ctx, batch); err != nil {
 		if errors.Is(err, domain.ErrConflict) {
 			return s.existingBatch(ctx, plan.ID, scheduledAt)
@@ -134,7 +175,7 @@ func (s *Service) RunPlan(ctx context.Context, plan domain.BackupPlan, trigger s
 					return domain.BackupBatch{}, err
 				}
 			}
-			result, err := s.store.Batch(ctx, s.tenantUID, batch.ID)
+			result, err := s.store.Batch(ctx, tenantUID, batch.ID)
 			if err == nil {
 				s.emitBatch(ctx, result.ID)
 			}
@@ -152,7 +193,7 @@ func (s *Service) RunPlan(ctx context.Context, plan domain.BackupPlan, trigger s
 			return domain.BackupBatch{}, err
 		}
 	}
-	result, err := s.store.Batch(ctx, s.tenantUID, batch.ID)
+	result, err := s.store.Batch(ctx, tenantUID, batch.ID)
 	if err == nil {
 		s.emitBatch(ctx, result.ID)
 	}
@@ -160,7 +201,7 @@ func (s *Service) RunPlan(ctx context.Context, plan domain.BackupPlan, trigger s
 }
 
 func (s *Service) existingBatch(ctx context.Context, planID string, scheduledAt time.Time) (domain.BackupBatch, error) {
-	batches, err := s.store.Batches(ctx, s.tenantUID, 100)
+	batches, err := s.store.Batches(ctx, s.currentTenant(), 100)
 	if err != nil {
 		return domain.BackupBatch{}, err
 	}
@@ -180,7 +221,7 @@ func (s *Service) planInstances(ctx context.Context, plan domain.BackupPlan) ([]
 	}
 	items := make([]domain.ApplicationInstance, 0, len(plan.Targets))
 	for _, target := range plan.Targets {
-		item, err := s.store.Instance(ctx, s.tenantUID, target.DeployID)
+		item, err := s.store.Instance(ctx, s.currentTenant(), target.DeployID)
 		if errors.Is(err, domain.ErrNotFound) {
 			continue
 		}
@@ -208,9 +249,10 @@ func (s *Service) enqueueInstance(ctx context.Context, batch domain.BackupBatch,
 		return domain.BackupJob{}, domain.BackupTask{}, err
 	}
 	now := time.Now().UTC()
-	task := domain.BackupTask{ID: taskID, TenantUID: s.tenantUID, BatchID: batch.ID, PlanID: batch.PlanID, BackupJobID: job.ID, AppID: instance.AppID, ApplicationName: instance.Name, DeployID: instance.DeployID, MultiInstance: instance.MultiInstance, SharedRiskAccepted: sharedRiskAccepted, TriggerType: batch.TriggerType, Status: "QUEUED", Priority: priority, MaxRetries: maxRetries, RetryBackoffSeconds: retryBackoffSeconds, AvailableAt: now, ScheduledAt: batch.ScheduledAt, CreatedAt: now, Scope: scope}
+	tenantUID := s.currentTenant()
+	task := domain.BackupTask{ID: taskID, TenantUID: tenantUID, BatchID: batch.ID, PlanID: batch.PlanID, BackupJobID: job.ID, AppID: instance.AppID, ApplicationName: instance.Name, DeployID: instance.DeployID, MultiInstance: instance.MultiInstance, SharedRiskAccepted: sharedRiskAccepted, TriggerType: batch.TriggerType, Status: "QUEUED", Priority: priority, MaxRetries: maxRetries, RetryBackoffSeconds: retryBackoffSeconds, AvailableAt: now, ScheduledAt: batch.ScheduledAt, CreatedAt: now, Scope: scope}
 	if err := s.store.AddTask(ctx, task); err != nil {
-		_ = s.store.FailBackupJob(context.Background(), s.tenantUID, job.ID, "QUEUE_PERSIST_FAILED", time.Now().UTC())
+		_ = s.store.FailBackupJob(context.Background(), tenantUID, job.ID, "QUEUE_PERSIST_FAILED", time.Now().UTC())
 		return domain.BackupJob{}, domain.BackupTask{}, err
 	}
 	return job, task, nil
@@ -222,11 +264,11 @@ func (s *Service) recordSkipped(ctx context.Context, batch domain.BackupBatch, i
 		return err
 	}
 	now := time.Now().UTC()
-	return s.store.AddTask(ctx, domain.BackupTask{ID: id, TenantUID: s.tenantUID, BatchID: batch.ID, PlanID: batch.PlanID, BackupJobID: "skipped-" + id, AppID: instance.AppID, ApplicationName: instance.Name, DeployID: instance.DeployID, MultiInstance: instance.MultiInstance, TriggerType: batch.TriggerType, Status: "SKIPPED", ErrorCode: code, AvailableAt: now, ScheduledAt: batch.ScheduledAt, CreatedAt: now, FinishedAt: &now, Scope: scope, ScopeValidation: validation})
+	return s.store.AddTask(ctx, domain.BackupTask{ID: id, TenantUID: s.currentTenant(), BatchID: batch.ID, PlanID: batch.PlanID, BackupJobID: "skipped-" + id, AppID: instance.AppID, ApplicationName: instance.Name, DeployID: instance.DeployID, MultiInstance: instance.MultiInstance, TriggerType: batch.TriggerType, Status: "SKIPPED", ErrorCode: code, AvailableAt: now, ScheduledAt: batch.ScheduledAt, CreatedAt: now, FinishedAt: &now, Scope: scope, ScopeValidation: validation})
 }
 
 func (s *Service) pauseForScope(ctx context.Context, planID string, reason domain.PlanPauseReason) error {
-	if err := s.store.PausePlanForScope(ctx, s.tenantUID, planID, reason); err != nil {
+	if err := s.store.PausePlanForScope(ctx, s.currentTenant(), planID, reason); err != nil {
 		return err
 	}
 	if s.onScopeInvalid != nil {
@@ -236,7 +278,7 @@ func (s *Service) pauseForScope(ctx context.Context, planID string, reason domai
 }
 
 func (s *Service) Cancel(ctx context.Context, id string) (domain.BackupTask, error) {
-	task, err := s.store.CancelTask(ctx, s.tenantUID, id, time.Now().UTC())
+	task, err := s.store.CancelTask(ctx, s.currentTenant(), id, time.Now().UTC())
 	if err != nil {
 		return domain.BackupTask{}, err
 	}
@@ -252,36 +294,36 @@ func (s *Service) Cancel(ctx context.Context, id string) (domain.BackupTask, err
 }
 
 func (s *Service) Batches(ctx context.Context, limit int) ([]domain.BackupBatch, error) {
-	return s.store.Batches(ctx, s.tenantUID, limit)
+	return s.store.Batches(ctx, s.currentTenant(), limit)
 }
 
 func (s *Service) BatchesPage(ctx context.Context, cursor string, limit int) (domain.BatchPage, error) {
-	return s.store.BatchesPage(ctx, s.tenantUID, cursor, limit)
+	return s.store.BatchesPage(ctx, s.currentTenant(), cursor, limit)
 }
 
 func (s *Service) Batch(ctx context.Context, id string) (domain.BackupBatch, error) {
-	return s.store.Batch(ctx, s.tenantUID, id)
+	return s.store.Batch(ctx, s.currentTenant(), id)
 }
 
 func (s *Service) Tasks(ctx context.Context, filter domain.TaskFilter) ([]domain.BackupTask, error) {
-	return s.store.Tasks(ctx, s.tenantUID, filter)
+	return s.store.Tasks(ctx, s.currentTenant(), filter)
 }
 
 func (s *Service) TasksPage(ctx context.Context, filter domain.TaskFilter) (domain.TaskPage, error) {
-	return s.store.TasksPage(ctx, s.tenantUID, filter)
+	return s.store.TasksPage(ctx, s.currentTenant(), filter)
 }
 
 func (s *Service) Task(ctx context.Context, id string) (domain.BackupTask, []domain.TaskAttempt, error) {
-	task, err := s.store.Task(ctx, s.tenantUID, id)
+	task, err := s.store.Task(ctx, s.currentTenant(), id)
 	if err != nil {
 		return domain.BackupTask{}, nil, err
 	}
-	attempts, err := s.store.TaskAttempts(ctx, s.tenantUID, id)
+	attempts, err := s.store.TaskAttempts(ctx, s.currentTenant(), id)
 	return task, attempts, err
 }
 
 func (s *Service) Retry(ctx context.Context, id string) (domain.BackupTask, error) {
-	task, err := s.store.Task(ctx, s.tenantUID, id)
+	task, err := s.store.Task(ctx, s.currentTenant(), id)
 	if err != nil {
 		return domain.BackupTask{}, err
 	}
@@ -289,10 +331,10 @@ func (s *Service) Retry(ctx context.Context, id string) (domain.BackupTask, erro
 		return domain.BackupTask{}, domain.ErrConflict
 	}
 	now := time.Now().UTC()
-	if err := s.store.ResetTaskForManualRetry(ctx, s.tenantUID, id, now); err != nil {
+	if err := s.store.ResetTaskForManualRetry(ctx, s.currentTenant(), id, now); err != nil {
 		return domain.BackupTask{}, err
 	}
-	result, err := s.store.Task(ctx, s.tenantUID, id)
+	result, err := s.store.Task(ctx, s.currentTenant(), id)
 	if err == nil {
 		s.emitTask(ctx, result.ID)
 		s.emitBatch(ctx, result.BatchID)
@@ -303,13 +345,30 @@ func (s *Service) Retry(ctx context.Context, id string) (domain.BackupTask, erro
 func (s *Service) worker(index int) {
 	workerID := fmt.Sprintf("%s-%d", s.workerID, index+1)
 	for {
+		tenantUID := s.currentTenant()
+		if tenantUID == "" {
+			time.Sleep(s.poll)
+			continue
+		}
+		s.mu.Lock()
+		ready := s.requeued[tenantUID]
+		s.mu.Unlock()
+		if !ready {
+			if err := s.store.RequeueExpiredTasks(context.Background(), tenantUID, time.Now().UTC()); err != nil {
+				time.Sleep(s.poll)
+				continue
+			}
+			s.mu.Lock()
+			s.requeued[tenantUID] = true
+			s.mu.Unlock()
+		}
 		now := time.Now().UTC()
 		token, err := randomID("lease")
 		if err != nil {
 			time.Sleep(s.poll)
 			continue
 		}
-		task, err := s.store.ClaimNextTask(context.Background(), s.tenantUID, workerID, token, now, now.Add(s.lease))
+		task, err := s.store.ClaimNextTask(context.Background(), tenantUID, workerID, token, now, now.Add(s.lease))
 		if errors.Is(err, domain.ErrNotFound) {
 			time.Sleep(s.poll)
 			continue
@@ -325,6 +384,10 @@ func (s *Service) worker(index int) {
 }
 
 func (s *Service) execute(workerID, token string, task domain.BackupTask) {
+	tenantUID := task.TenantUID
+	if tenantUID == "" {
+		tenantUID = s.currentTenant()
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.mu.Lock()
 	s.cancelByID[task.ID] = cancel
@@ -335,7 +398,7 @@ func (s *Service) execute(workerID, token string, task domain.BackupTask) {
 		s.mu.Unlock()
 		cancel()
 	}()
-	_ = s.store.SetTaskStatus(ctx, s.tenantUID, task.ID, token, "PRECHECKING")
+	_ = s.store.SetTaskStatus(ctx, tenantUID, task.ID, token, "PRECHECKING")
 	done := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(s.lease / 3)
@@ -346,7 +409,7 @@ func (s *Service) execute(workerID, token string, task domain.BackupTask) {
 				return
 			case <-ticker.C:
 				now := time.Now().UTC()
-				_ = s.store.HeartbeatTask(context.Background(), s.tenantUID, task.ID, token, now, now.Add(s.lease))
+				_ = s.store.HeartbeatTask(context.Background(), tenantUID, task.ID, token, now, now.Add(s.lease))
 			}
 		}
 	}()
@@ -354,7 +417,7 @@ func (s *Service) execute(workerID, token string, task domain.BackupTask) {
 	close(done)
 	now := time.Now().UTC()
 	if errors.Is(err, context.Canceled) {
-		_ = s.store.FinishTaskFailure(context.Background(), s.tenantUID, task.ID, token, "CANCELLED", "BACKUP_CANCELLED", now)
+		_ = s.store.FinishTaskFailure(context.Background(), tenantUID, task.ID, token, "CANCELLED", "BACKUP_CANCELLED", now)
 		s.emitTask(context.Background(), task.ID)
 		s.emitBatch(context.Background(), task.BatchID)
 		return
@@ -362,7 +425,7 @@ func (s *Service) execute(workerID, token string, task domain.BackupTask) {
 	if err == nil {
 		job, lookupErr := s.backups.Job(context.Background(), task.BackupJobID)
 		if lookupErr == nil {
-			_ = s.store.CompleteTask(context.Background(), s.tenantUID, task.ID, token, job.SnapshotID, now)
+			_ = s.store.CompleteTask(context.Background(), tenantUID, task.ID, token, job.SnapshotID, now)
 			if s.afterSucceeded != nil {
 				_ = s.afterSucceeded(context.Background(), task)
 			}
@@ -378,7 +441,7 @@ func (s *Service) execute(workerID, token string, task domain.BackupTask) {
 			path, expected = failure.Path, failure.Expected
 		}
 		reason := domain.PlanPauseReason{Code: code, DeployID: task.DeployID, Path: path, Expected: expected, DetectedAt: now, ScopeRevision: task.Scope.Revision}
-		_ = s.store.SetTaskScopeValidation(context.Background(), s.tenantUID, task.ID, token, reason)
+		_ = s.store.SetTaskScopeValidation(context.Background(), tenantUID, task.ID, token, reason)
 		_ = s.pauseForScope(context.Background(), task.PlanID, reason)
 	}
 	if retryable(code) && task.AttemptCount <= task.MaxRetries {
@@ -387,7 +450,7 @@ func (s *Service) execute(workerID, token string, task domain.BackupTask) {
 			base = 60
 		}
 		delay := time.Duration(base) * time.Second * time.Duration(1<<min(task.AttemptCount-1, 6))
-		_ = s.store.RetryTask(context.Background(), s.tenantUID, task.ID, token, code, now.Add(delay), now)
+		_ = s.store.RetryTask(context.Background(), tenantUID, task.ID, token, code, now.Add(delay), now)
 		s.emitTask(context.Background(), task.ID)
 		s.emitBatch(context.Background(), task.BatchID)
 		return
@@ -396,7 +459,7 @@ func (s *Service) execute(workerID, token string, task domain.BackupTask) {
 	if code == "BACKUP_TIMED_OUT" {
 		status = "TIMED_OUT"
 	}
-	_ = s.store.FinishTaskFailure(context.Background(), s.tenantUID, task.ID, token, status, code, now)
+	_ = s.store.FinishTaskFailure(context.Background(), tenantUID, task.ID, token, status, code, now)
 	s.emitTask(context.Background(), task.ID)
 	s.emitBatch(context.Background(), task.BatchID)
 }
@@ -405,7 +468,7 @@ func (s *Service) emitTask(ctx context.Context, id string) {
 	if s.onTaskUpdated == nil {
 		return
 	}
-	task, err := s.store.Task(ctx, s.tenantUID, id)
+	task, err := s.store.Task(ctx, s.currentTenant(), id)
 	if err == nil {
 		s.onTaskUpdated(ctx, task)
 	}
@@ -415,7 +478,7 @@ func (s *Service) emitBatch(ctx context.Context, id string) {
 	if s.onBatchUpdated == nil {
 		return
 	}
-	batch, err := s.store.Batch(ctx, s.tenantUID, id)
+	batch, err := s.store.Batch(ctx, s.currentTenant(), id)
 	if err == nil {
 		s.onBatchUpdated(ctx, batch)
 	}

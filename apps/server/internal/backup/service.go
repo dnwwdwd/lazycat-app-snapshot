@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -23,6 +25,7 @@ import (
 	"cloud.lazycat.app.backup/apps/server/internal/probe"
 	"cloud.lazycat.app.backup/apps/server/internal/source"
 	"cloud.lazycat.app.backup/apps/server/internal/storage"
+	tenantpkg "cloud.lazycat.app.backup/apps/server/internal/tenant"
 	"golang.org/x/sys/unix"
 	"modernc.org/sqlite"
 )
@@ -30,6 +33,13 @@ import (
 const (
 	defaultQueueSize = 16
 	defaultTimeout   = 2 * time.Hour
+
+	// SQLite Online Backup can temporarily return BUSY or LOCKED while the
+	// target application commits. A short retry window is long enough to span
+	// ordinary write bursts without turning a stuck source into an unbounded
+	// worker.
+	sqliteBusyRetryWindow = 30 * time.Second
+	sqliteBusyTimeout     = 5 * time.Second
 )
 
 type Error struct {
@@ -83,9 +93,10 @@ type Service struct {
 	timeout        time.Duration
 	jobs           chan string
 	managedByQueue bool
+	tenantScope    *tenantpkg.Scope
 }
 
-func New(store *persistence.Store, resolver source.Resolver, config Config) (*Service, error) {
+func New(store *persistence.Store, resolver source.Resolver, config Config, scopes ...*tenantpkg.Scope) (*Service, error) {
 	if store == nil || strings.TrimSpace(config.TenantUID) == "" {
 		return nil, errors.New("backup store and tenant identity are required")
 	}
@@ -124,9 +135,16 @@ func New(store *persistence.Store, resolver source.Resolver, config Config) (*Se
 	if config.JobTimeout <= 0 {
 		config.JobTimeout = defaultTimeout
 	}
+	tenantScope := tenantpkg.New(config.TenantUID)
+	initialTenant := strings.TrimSpace(config.TenantUID)
+	if len(scopes) > 0 && scopes[0] != nil {
+		tenantScope = scopes[0]
+		initialTenant = tenantScope.UID()
+	}
 	service := &Service{
-		store: store, resolver: resolver, tenantUID: config.TenantUID, storage: fileStore,
+		store: store, resolver: resolver, tenantUID: initialTenant, storage: fileStore,
 		cacheRoot: cacheRoot, timeout: config.JobTimeout, jobs: make(chan string, config.QueueSize), managedByQueue: config.ManagedByQueue,
+		tenantScope: tenantScope,
 	}
 	if !config.ManagedByQueue {
 		for range config.Workers {
@@ -134,6 +152,29 @@ func New(store *persistence.Store, resolver source.Resolver, config Config) (*Se
 		}
 	}
 	return service, nil
+}
+
+// ForTenant returns a view bound to the authenticated gateway UID while
+// sharing the immutable resolver, storage adapter and process tenant scope.
+func (s *Service) ForTenant(tenantUID string) *Service {
+	if s == nil {
+		return nil
+	}
+	if s.tenantScope != nil {
+		_ = s.tenantScope.Bind(tenantUID)
+	}
+	clone := *s
+	clone.tenantUID = strings.TrimSpace(tenantUID)
+	return &clone
+}
+
+func (s *Service) currentTenant() string {
+	if s.tenantScope != nil {
+		if uid := s.tenantScope.UID(); uid != "" {
+			return uid
+		}
+	}
+	return strings.TrimSpace(s.tenantUID)
 }
 
 func (s *Service) StartManual(ctx context.Context, deployID string, sharedRiskAccepted bool, subject string, role domain.Role) (domain.BackupJob, error) {
@@ -145,7 +186,7 @@ func (s *Service) StartManual(ctx context.Context, deployID string, sharedRiskAc
 	case s.jobs <- job.ID:
 		return job, nil
 	default:
-		_ = s.store.FailBackupJob(context.Background(), s.tenantUID, job.ID, "BACKUP_QUEUE_FULL", time.Now().UTC())
+		_ = s.store.FailBackupJob(context.Background(), s.currentTenant(), job.ID, "BACKUP_QUEUE_FULL", time.Now().UTC())
 		return domain.BackupJob{}, &Error{Code: "BACKUP_QUEUE_FULL", Err: errors.New("manual backup queue is full")}
 	}
 }
@@ -153,7 +194,8 @@ func (s *Service) StartManual(ctx context.Context, deployID string, sharedRiskAc
 // CreateJob persists a validated backup job without assigning it to an in-memory
 // worker. The phase-4 queue owns execution when ManagedByQueue is enabled.
 func (s *Service) CreateJob(ctx context.Context, deployID string, sharedRiskAccepted bool, subject string, role domain.Role, planID, batchID, taskID, triggerType string, scheduledAt time.Time, scope domain.BackupScope) (domain.BackupJob, error) {
-	instance, err := s.store.Instance(ctx, s.tenantUID, deployID)
+	tenantUID := s.currentTenant()
+	instance, err := s.store.Instance(ctx, tenantUID, deployID)
 	if err != nil {
 		return domain.BackupJob{}, err
 	}
@@ -165,7 +207,7 @@ func (s *Service) CreateJob(ctx context.Context, deployID string, sharedRiskAcce
 		return domain.BackupJob{}, err
 	}
 	job := domain.BackupJob{
-		ID: id, TenantUID: s.tenantUID, OIDCSubject: subject, UserRole: role,
+		ID: id, TenantUID: tenantUID, OIDCSubject: subject, UserRole: role,
 		AppID: instance.AppID, ApplicationName: instance.Name, ApplicationVersion: instance.Version,
 		DeployID: instance.DeployID, MultiInstance: instance.MultiInstance, SharedRiskAccepted: sharedRiskAccepted,
 		Status: "QUEUED", CreatedAt: time.Now().UTC(), PlanID: planID, BatchID: batchID, TaskID: taskID,
@@ -178,17 +220,18 @@ func (s *Service) CreateJob(ctx context.Context, deployID string, sharedRiskAcce
 }
 
 func (s *Service) Job(ctx context.Context, id string) (domain.BackupJob, error) {
-	return s.store.BackupJob(ctx, s.tenantUID, id)
+	return s.store.BackupJob(ctx, s.currentTenant(), id)
 }
 
 // ScopeCatalog derives picker metadata from the same server-side resolver used
 // by the archive engine. It never exposes a source absolute path.
 func (s *Service) ScopeCatalog(ctx context.Context, deployID, query, cursor string, limit int) (domain.BackupScopeCatalog, error) {
-	instance, err := s.store.Instance(ctx, s.tenantUID, deployID)
+	tenantUID := s.currentTenant()
+	instance, err := s.store.Instance(ctx, tenantUID, deployID)
 	if err != nil {
 		return domain.BackupScopeCatalog{}, err
 	}
-	resolved, err := s.resolver.Resolve(source.Request{TenantUID: s.tenantUID, OwnerUID: s.tenantUID, AppID: instance.AppID, DeployID: instance.DeployID})
+	resolved, err := s.resolver.Resolve(source.Request{TenantUID: tenantUID, OwnerUID: tenantUID, AppID: instance.AppID, DeployID: instance.DeployID})
 	if err != nil {
 		return domain.BackupScopeCatalog{}, err
 	}
@@ -201,11 +244,12 @@ func (s *Service) ValidateScope(ctx context.Context, deployID string, scope doma
 	if scope.Mode == "" || scope.Mode == "FULL" {
 		return nil
 	}
-	instance, err := s.store.Instance(ctx, s.tenantUID, deployID)
+	tenantUID := s.currentTenant()
+	instance, err := s.store.Instance(ctx, tenantUID, deployID)
 	if err != nil {
 		return err
 	}
-	resolved, err := s.resolver.Resolve(source.Request{TenantUID: s.tenantUID, OwnerUID: s.tenantUID, AppID: instance.AppID, DeployID: instance.DeployID})
+	resolved, err := s.resolver.Resolve(source.Request{TenantUID: tenantUID, OwnerUID: tenantUID, AppID: instance.AppID, DeployID: instance.DeployID})
 	if err != nil {
 		return err
 	}
@@ -218,7 +262,7 @@ func (s *Service) ValidateScope(ctx context.Context, deployID string, scope doma
 }
 
 func (s *Service) Snapshots(ctx context.Context, limit int) ([]domain.Snapshot, error) {
-	items, err := s.store.ListSnapshots(ctx, s.tenantUID, limit)
+	items, err := s.store.ListSnapshots(ctx, s.currentTenant(), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +273,7 @@ func (s *Service) Snapshots(ctx context.Context, limit int) ([]domain.Snapshot, 
 }
 
 func (s *Service) SnapshotsPage(ctx context.Context, cursor string, limit int) (domain.SnapshotPage, error) {
-	page, err := s.store.ListSnapshotsPage(ctx, s.tenantUID, cursor, limit)
+	page, err := s.store.ListSnapshotsPage(ctx, s.currentTenant(), cursor, limit)
 	if err != nil {
 		return domain.SnapshotPage{}, err
 	}
@@ -240,7 +284,7 @@ func (s *Service) SnapshotsPage(ctx context.Context, cursor string, limit int) (
 }
 
 func (s *Service) Snapshot(ctx context.Context, id string) (domain.Snapshot, error) {
-	item, err := s.store.Snapshot(ctx, s.tenantUID, id)
+	item, err := s.store.Snapshot(ctx, s.currentTenant(), id)
 	if err != nil {
 		return domain.Snapshot{}, err
 	}
@@ -255,17 +299,18 @@ func (s *Service) withStorageStatus(item domain.Snapshot) domain.Snapshot {
 }
 
 func (s *Service) Verify(ctx context.Context, id string) (domain.Snapshot, error) {
-	snapshot, err := s.store.Snapshot(ctx, s.tenantUID, id)
+	tenantUID := s.currentTenant()
+	snapshot, err := s.store.Snapshot(ctx, tenantUID, id)
 	if err != nil {
 		return domain.Snapshot{}, err
 	}
 	location := storage.Location{Directory: snapshot.StoragePath}
 	if err := s.storage.QuickVerify(location, snapshot.ArchiveSize, snapshot.ArchiveSHA256); err != nil {
-		_ = s.store.SetSnapshotVerification(ctx, s.tenantUID, id, "FAILED", time.Now().UTC())
+		_ = s.store.SetSnapshotVerification(ctx, tenantUID, id, "FAILED", time.Now().UTC())
 		return domain.Snapshot{}, &Error{Code: "SNAPSHOT_VERIFICATION_FAILED", Err: err}
 	}
 	now := time.Now().UTC()
-	if err := s.store.SetSnapshotVerification(ctx, s.tenantUID, id, "VERIFIED", now); err != nil {
+	if err := s.store.SetSnapshotVerification(ctx, tenantUID, id, "VERIFIED", now); err != nil {
 		return domain.Snapshot{}, err
 	}
 	snapshot.VerificationStatus, snapshot.VerifiedAt = "VERIFIED", &now
@@ -287,24 +332,31 @@ func (s *Service) run(id string) {
 func (s *Service) ExecuteJob(parent context.Context, id string) error {
 	ctx, cancel := context.WithTimeout(parent, s.timeout)
 	defer cancel()
-	job, err := s.store.BackupJob(ctx, s.tenantUID, id)
+	tenantUID := s.currentTenant()
+	job, err := s.store.BackupJob(ctx, tenantUID, id)
 	if err != nil {
 		return err
 	}
 	started := time.Now().UTC()
-	if err := s.store.StartBackupJob(ctx, s.tenantUID, id, started); err != nil {
+	if err := s.store.StartBackupJob(ctx, tenantUID, id, started); err != nil {
 		return err
 	}
 	job.Status, job.StartedAt = "RUNNING", &started
 	if err := s.execute(ctx, job); err != nil {
-		_ = s.store.FailBackupJob(context.Background(), s.tenantUID, id, Code(err), time.Now().UTC())
+		code := Code(err)
+		var busyTimeout *sqliteBusyTimeoutError
+		if errors.As(err, &busyTimeout) {
+			slog.Warn("SQLite source remained locked until the snapshot deadline", "job_id", id, "code", code)
+		}
+		_ = s.store.FailBackupJob(context.Background(), tenantUID, id, code, time.Now().UTC())
 		return err
 	}
 	return nil
 }
 
 func (s *Service) execute(ctx context.Context, job domain.BackupJob) error {
-	resolved, err := s.resolver.Resolve(source.Request{TenantUID: s.tenantUID, OwnerUID: s.tenantUID, AppID: job.AppID, DeployID: job.DeployID})
+	tenantUID := s.currentTenant()
+	resolved, err := s.resolver.Resolve(source.Request{TenantUID: tenantUID, OwnerUID: tenantUID, AppID: job.AppID, DeployID: job.DeployID})
 	if err != nil {
 		return err
 	}
@@ -339,7 +391,7 @@ func (s *Service) execute(ctx context.Context, job domain.BackupJob) error {
 	defer os.RemoveAll(cacheDirectory)
 	capturedAt := time.Now().UTC()
 	base := manifest{
-		FormatVersion: "1", ProductVersion: "0.1.0", Status: "completed", TenantUID: s.tenantUID,
+		FormatVersion: "1", ProductVersion: "0.1.0", Status: "completed", TenantUID: tenantUID,
 		OIDCSubject: job.OIDCSubject, UserRole: string(job.UserRole), AppID: job.AppID,
 		ApplicationName: job.ApplicationName, ApplicationVersion: job.ApplicationVersion, DeployID: job.DeployID,
 		MultiInstance: job.MultiInstance, SharedInstanceWarning: !job.MultiInstance, JobID: job.ID,
@@ -360,7 +412,7 @@ func (s *Service) execute(ctx context.Context, job domain.BackupJob) error {
 	if err != nil {
 		return &Error{Code: "ARCHIVE_DIGEST_FAILED", Err: err}
 	}
-	settings, err := s.store.Settings(ctx, s.tenantUID)
+	settings, err := s.store.Settings(ctx, tenantUID)
 	if err != nil {
 		return &Error{Code: "SETTINGS_LOOKUP_FAILED", Err: err}
 	}
@@ -388,7 +440,7 @@ func (s *Service) execute(ctx context.Context, job domain.BackupJob) error {
 	}
 	verifiedAt := time.Now().UTC()
 	snapshot := domain.Snapshot{
-		ID: snapshotID(job.ID), TenantUID: s.tenantUID, JobID: job.ID, AppID: job.AppID,
+		ID: snapshotID(job.ID), TenantUID: tenantUID, JobID: job.ID, AppID: job.AppID,
 		ApplicationName: job.ApplicationName, ApplicationVersion: job.ApplicationVersion, DeployID: job.DeployID,
 		MultiInstance: job.MultiInstance, SharedInstanceWarning: !job.MultiInstance, Status: "COMPLETED",
 		StoragePath: location.Directory, ArchiveName: "snapshot.zip", ArchiveSize: size, ArchiveSHA256: sha256,
@@ -595,7 +647,7 @@ func writeSQLite(ctx context.Context, writer *zip.Writer, entry probe.Entry, tem
 	}
 	defer os.Remove(temporary)
 	if err := onlineBackup(ctx, entry.Path, temporary); err != nil {
-		return &Error{Code: "SQLITE_SNAPSHOT_FAILED", Err: err}
+		return &Error{Code: sqliteSnapshotCode(err), Err: err}
 	}
 	name, err := zipName(entry.Relative, false)
 	if err != nil {
@@ -711,27 +763,45 @@ type onlineBackuper interface {
 	NewBackup(string) (*sqlite.Backup, error)
 }
 
+// sqliteBusyTimeoutError distinguishes a source that stayed BUSY or LOCKED
+// for the complete bounded window from other snapshot failures. It keeps the
+// driver error available to code while avoiding source paths in task records.
+type sqliteBusyTimeoutError struct {
+	Err error
+}
+
+func (e *sqliteBusyTimeoutError) Error() string {
+	return "sqlite source remained busy until the snapshot deadline"
+}
+
+func (e *sqliteBusyTimeoutError) Unwrap() error { return e.Err }
+
 func onlineBackup(ctx context.Context, sourcePath, destination string) error {
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	deadline := time.Now().Add(sqliteBusyRetryWindow)
+	if requestDeadline, ok := ctx.Deadline(); ok && requestDeadline.Before(deadline) {
+		deadline = requestDeadline
+	}
+	for attempt := 0; ; attempt++ {
 		if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err := onlineBackupOnce(ctx, sourcePath, destination); err == nil {
+		err := onlineBackupOnce(ctx, sourcePath, destination)
+		if err == nil {
 			return quickCheck(ctx, destination)
-		} else if !sqliteBusy(err) || attempt == 2 {
-			return err
-		} else {
-			lastErr = err
 		}
-		wait := time.Duration(attempt+1) * 50 * time.Millisecond
+		if !sqliteBusy(err) {
+			return err
+		}
+		wait := sqliteBusyWait(attempt)
+		if time.Now().Add(wait).After(deadline) {
+			return &sqliteBusyTimeoutError{Err: err}
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(wait):
 		}
 	}
-	return lastErr
 }
 
 func onlineBackupOnce(ctx context.Context, sourcePath, destination string) error {
@@ -751,7 +821,7 @@ func onlineBackupOnce(ctx context.Context, sourcePath, destination string) error
 		if !ok {
 			return errors.New("sqlite driver does not expose online backup")
 		}
-		backup, err := backuper.NewBackup(destination)
+		backup, err := backuper.NewBackup(sqliteWritableURI(destination))
 		if err != nil {
 			return err
 		}
@@ -773,9 +843,31 @@ func onlineBackupOnce(ctx context.Context, sourcePath, destination string) error
 	return err
 }
 
+func sqliteSnapshotCode(err error) string {
+	var busyTimeout *sqliteBusyTimeoutError
+	if errors.As(err, &busyTimeout) {
+		return "SQLITE_SOURCE_LOCKED"
+	}
+	return "SQLITE_SNAPSHOT_FAILED"
+}
+
 func sqliteBusy(err error) bool {
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "database is locked") || strings.Contains(message, "database is busy") || strings.Contains(message, "sqlite_busy")
+	return strings.Contains(message, "database is locked") ||
+		strings.Contains(message, "database table is locked") ||
+		strings.Contains(message, "database is busy") ||
+		strings.Contains(message, "sqlite_busy") ||
+		strings.Contains(message, "sqlite_locked")
+}
+
+func sqliteBusyWait(attempt int) time.Duration {
+	// Keep the worker responsive to cancellation while allowing a live SQLite
+	// writer to finish a transaction. The delay is capped so task-level retry
+	// remains the recovery path for persistent contention.
+	if attempt > 5 {
+		attempt = 5
+	}
+	return 100 * time.Millisecond * time.Duration(1<<attempt)
 }
 
 func quickCheck(ctx context.Context, filename string) error {
@@ -795,7 +887,20 @@ func quickCheck(ctx context.Context, filename string) error {
 }
 
 func sqliteReadOnlyURI(filename string) string {
-	return "file:" + filepath.ToSlash(filename) + "?mode=ro"
+	return sqliteURI(filename, "ro")
+}
+
+func sqliteWritableURI(filename string) string {
+	return sqliteURI(filename, "rwc")
+}
+
+func sqliteURI(filename, mode string) string {
+	value := &url.URL{Scheme: "file", Path: filepath.ToSlash(filename)}
+	query := url.Values{}
+	query.Set("mode", mode)
+	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeout.Milliseconds()))
+	value.RawQuery = query.Encode()
+	return value.String()
 }
 
 func zipName(relative string, directory bool) (string, error) {

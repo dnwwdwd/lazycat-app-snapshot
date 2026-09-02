@@ -22,13 +22,14 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		phase5Unavailable(w, r)
 		return
 	}
-	result, err := s.operations.Overview(r.Context())
+	operationsService := s.operationsFor(r)
+	result, err := operationsService.Overview(r.Context())
 	if err != nil {
 		phase5Error(w, r, err)
 		return
 	}
 	if s.snapshots != nil {
-		if summary, summaryErr := s.snapshots.Summary(r.Context()); summaryErr == nil {
+		if summary, summaryErr := s.snapshotsFor(r).Summary(r.Context()); summaryErr == nil {
 			result.Storage = summary
 		}
 	}
@@ -49,7 +50,7 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	page, err := s.operations.AlertsPage(r.Context(), domain.AlertFilter{Cursor: r.URL.Query().Get("cursor"), Limit: limit, Status: status})
+	page, err := s.operationsFor(r).AlertsPage(r.Context(), domain.AlertFilter{Cursor: r.URL.Query().Get("cursor"), Limit: limit, Status: status})
 	if err != nil {
 		phase5Error(w, r, err)
 		return
@@ -63,7 +64,7 @@ func (s *Server) readAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := r.Context().Value(sessionKey).(domain.Session)
-	item, err := s.operations.MarkAlertRead(r.Context(), chi.URLParam(r, "alertID"), current.Subject)
+	item, err := s.operationsFor(r).MarkAlertRead(r.Context(), chi.URLParam(r, "alertID"), current.Subject)
 	if err != nil {
 		phase5Error(w, r, err)
 		return
@@ -77,7 +78,7 @@ func (s *Server) resolveAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := r.Context().Value(sessionKey).(domain.Session)
-	item, err := s.operations.ResolveAlert(r.Context(), chi.URLParam(r, "alertID"), current.Subject)
+	item, err := s.operationsFor(r).ResolveAlert(r.Context(), chi.URLParam(r, "alertID"), current.Subject)
 	if err != nil {
 		phase5Error(w, r, err)
 		return
@@ -106,7 +107,7 @@ func (s *Server) muteAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := r.Context().Value(sessionKey).(domain.Session)
-	item, err := s.operations.MuteAlert(r.Context(), chi.URLParam(r, "alertID"), current.Subject, time.Duration(request.Minutes)*time.Minute)
+	item, err := s.operationsFor(r).MuteAlert(r.Context(), chi.URLParam(r, "alertID"), current.Subject, time.Duration(request.Minutes)*time.Minute)
 	if err != nil {
 		phase5Error(w, r, err)
 		return
@@ -119,7 +120,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		phase5Unavailable(w, r)
 		return
 	}
-	value, err := s.operations.Settings(r.Context())
+	value, err := s.operationsFor(r).Settings(r.Context())
 	if err != nil {
 		phase5Error(w, r, err)
 		return
@@ -144,7 +145,7 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := r.Context().Value(sessionKey).(domain.Session)
-	result, err := s.operations.UpdateSettings(r.Context(), value, current.Subject)
+	result, err := s.operationsFor(r).UpdateSettings(r.Context(), value, current.Subject)
 	if err != nil {
 		phase5Error(w, r, err)
 		return
@@ -161,7 +162,7 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	page, err := s.operations.AuditsPage(r.Context(), r.URL.Query().Get("cursor"), limit)
+	page, err := s.operationsFor(r).AuditsPage(r.Context(), r.URL.Query().Get("cursor"), limit)
 	if err != nil {
 		phase5Error(w, r, err)
 		return
@@ -182,8 +183,13 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	after := int64(0)
+	hasCursor := false
 	if raw := r.Header.Get("Last-Event-ID"); raw != "" {
-		after, _ = strconv.ParseInt(raw, 10, 64)
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err == nil && parsed >= 0 {
+			after = parsed
+			hasCursor = true
+		}
 	} else if raw := r.URL.Query().Get("after"); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || parsed < 0 {
@@ -191,17 +197,31 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		after = parsed
+		hasCursor = true
+	}
+	if !hasCursor {
+		latest, err := s.operationsFor(r).LatestEventID(r.Context())
+		if err != nil {
+			return
+		}
+		after = latest
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	// A new browser session starts at the current event head. It has already
+	// loaded authoritative REST data and must not treat historical task events
+	// as newly completed browser notifications. Reconnects pass `after` and
+	// still receive every event emitted while the stream was unavailable.
+	_, _ = fmt.Fprintf(w, "event: stream.ready\ndata: {\"after\":%d}\n\n", after)
+	flusher.Flush()
 	deadline := time.NewTimer(25 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
-		items, err := s.operations.EventsAfter(r.Context(), after)
+		items, err := s.operationsFor(r).EventsAfter(r.Context(), after)
 		if err != nil {
 			return
 		}
@@ -262,5 +282,5 @@ func (s *Server) auditRequest(r *http.Request, action, entityType, entityID stri
 	if !ok {
 		return
 	}
-	_ = s.operations.Record(r.Context(), action, current.Subject, entityType, entityID, nil)
+	_ = s.operationsFor(r).Record(r.Context(), action, current.Subject, entityType, entityID, nil)
 }
