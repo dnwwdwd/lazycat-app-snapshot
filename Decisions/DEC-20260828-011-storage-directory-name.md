@@ -4,7 +4,9 @@
 
 ## 决定
 
-当前用户网盘中的备份根目录固定为 `MimiAppBakcup/`。该名称不使用平台品牌，目录下既有的快照、`_partial/`、`_trash/` 与 `_restore_exports/` 相对路径结构保持不变。
+当前用户网盘中的备份根目录固定为 `MimiAppBakcup/`。该名称不使用平台品牌；快照按 `MimiAppBakcup/<deploy_id>/<时间>/` 归档，目录下的 `_partial/`、`_trash/` 与 `_restore_exports/` 仍保持独立的维护路径。
+
+时间目录使用当前 tenant 设置的时区生成；同一 `deploy_id` 与时间发生冲突时追加批次短 ID。快照记录保存最终相对路径，文件索引、快速校验、完整校验和目录状态均通过该路径访问。
 
 服务初始化时只创建或使用 `MimiAppBakcup/`。服务不迁移、合并、扫描、删除或修改旧 `LazycatAppBackup/` 目录。
 

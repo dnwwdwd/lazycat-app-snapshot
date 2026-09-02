@@ -29,6 +29,10 @@ Before changing code, read this file, [DOCUMENT_MAP.md](DOCUMENT_MAP.md), the ma
 - Do not create, switch to, merge, or use any other branch, including temporary and agent-created branches.
 - Before making a change, run `git status --short --branch` and confirm the current branch is `main`. If it is not `main`, stop and ask for direction; do not create a branch as a workaround.
 
+## Package version
+
+- Keep `package.yml` version at `0.1.0`. Do not change it when rebuilding an LPK unless the user explicitly asks for a version change.
+
 ## Verification code
 
 - Do not add, modify, or generate test code, fixtures intended only for tests, or other verification-only code.

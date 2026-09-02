@@ -4,6 +4,13 @@
 **Status:** Local implementation complete — 阶段 0–5 已结束；真实平台确认不列为开发阶段
 **Last updated:** 2026-08-27
 
+## SQLite 持续锁诊断与修复
+
+- 设备中的 `cloud.lazycat.app.mrslimslim.gpt-image-canvas` 任务在 2026-09-01 经过四次尝试后最终失败。新版 Online Backup 的最后一次持续 31 秒，证明 30 秒锁退避已经生效；目标 Node 进程持续持有 `gpt-image-canvas.sqlite` 的 SQLite POSIX 写锁，不能安全地在应用运行时取得快照。
+- 备份引擎将窗口耗尽与其他 SQLite 快照错误拆分为 `SQLITE_SOURCE_LOCKED` 和 `SQLITE_SNAPSHOT_FAILED`。前端为前者显示暂停目标应用后重试的可读提示；服务端仅记录任务 ID 与稳定错误码，不记录源路径。
+- 本轮不自动停止、重启或写入目标应用。真实设备需要在暂停目标应用后重试该任务，确认一致快照可提交；随后恢复运行并确认持续锁仍安全失败。
+- 2026-09-01：`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server`、`npm run build --prefix apps/web`、`lzc-cli project build -o cloud.lazycat.app.mimi-app-backup-v0.1.0.lpk`、`lzc-cli lpk info` 和 `lzc-cli lpk lint` 通过。新包为 19.04 MiB（19,962,880 bytes），SHA-256 `f9ec7f007a9555c2f3e3585f10950db017e4516e4a6180af579d539cceea75d2`；未部署或发布。
+
 ## 当前修复交付定义
 
 - 修正应用详情元数据、应用图标、任务可见性、卡片样式与下拉组件使用；页面资源分开加载，已得到会话时侧栏和设置不再显示全局加载文案。
@@ -20,7 +27,7 @@
 ## 本次包重命名与构建
 
 - 产品名称统一为“咪咪应用备份（Mimi App Backup）”；`package.yml` 的 `package` 更新为 `mimi-app-backup`，正式与 POC manifest 的内部服务路由同步为 `web.mimi-app-backup.lzcapp:8080`。
-- 前端国际化、侧栏品牌、OIDC 登录页、原型预览和 OpenAPI 标题已同步使用新名称；`LazycatAppBackup` 网盘目录保持不变，作为既有存储协议。
+- 前端国际化、侧栏品牌、OIDC 登录页、原型预览和 OpenAPI 标题已同步使用新名称；当前版本使用 `MimiAppBakcup/<deploy_id>/<时间>/` 作为快照网盘路径。
 - `sh lzc/build-package.sh`：通过，Go 服务端和 Vite 前端生产构建完成。
 - `lzc-cli project build -o mimi-app-backup-0.1.0.lpk`：通过，生成 22,742,528 字节的 LPK V2 包，SHA-256 为 `61366eab0a0bfd0644b98b615a37e380e201caceb6b65d0ec58ff2d66bdb3c5e`。
 - `lzc-cli lpk info mimi-app-backup-0.1.0.lpk`：通过，报告 `package: mimi-app-backup`、`version: 0.1.0`、无嵌入镜像。

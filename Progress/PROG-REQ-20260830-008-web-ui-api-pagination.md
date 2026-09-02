@@ -2,20 +2,33 @@
 
 **Requirement:** REQ-20260830-008
 **Status:** 本地实现完成；真实平台验证待执行
-**Last updated:** 2026-08-30
+**Last updated:** 2026-09-01
+
+## 2026-09-01 登录页文案国际化修正
+
+生产 OIDC 登录页的品牌名称、主标题、按钮和身份不一致提示按 `Accept-Language` 返回中英文；移除固定的版本副标题、产品眉题和登录说明，避免英文页面混入中文或内部版本标识。同步清理 `designs/OIDC 登录页.html` 中的同类固定文案。
+
+验证记录：`gofmt -w apps/server/internal/httpapi/auth_page.go`、`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server`、`npm run api:generate --prefix apps/web`、`(cd apps/web && npx vite build)`、`lzc-cli project build -o cloud.lazycat.app.mimi-app-backup-v0.1.0.lpk`、`lzc-cli lpk info`、`lzc-cli lpk lint` 和 `git diff --check` 均通过。LPK 大小为 19.03 MiB，SHA-256 为 `b0d085653c8f7d3c3034ed600a6265b15aa76917b40e19f4b89b684643145eab`；未安装、部署、发布或推送。
+
+## 2026-08-31 权限范围修正
+
+用户确认应用安装者不是使用边界：管理员和普通用户都应看到并使用全部已安装应用。目录同步现以 `only_owner=false` 查询，不按返回的 `owner` 过滤；每个会话仍用自己的 `gateway_uid` 保存计划、任务、快照索引和网盘记录。该修正已重新执行 Go/Vite 构建并重新生成固定版本 `0.1.0` LPK，真实设备仍需用普通用户账号回归确认应用数量。
+
+验证记录：`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server`、`npx vite build`（`apps/web/`）、`lzc-cli project release --output cloud.lazycat.app.mimi-app-backup-v0.1.0.lpk`、`lzc-cli lpk info`、`lzc-cli lpk lint` 和 `git diff --check` 均通过。LPK 大小为 19,930,112 字节，SHA-256 为 `9b1bdcf45aeb9ad81e1677c8af7d4d243bcfb5d3643c8fa96973abdbedd8aa40`；未安装、部署、发布或推送。
 
 ## 本次实现
 
 - `designs/web.tsx` 的样式模板原文迁移到正式前端，品牌图标放入前端公共根目录并继续使用 `/lzc-icon.png`。
 - 新的 `src/ui/` 分为实时控制层、共用组件、八个页面和详情/计划弹窗；`App.tsx` 已改为正式入口，旧生产 React 页面、布局、控制器和模拟数据已删除。
-- 实时控制层并行读取 session、overview、applications、plans、tasks、batches、backups、storage、alerts、settings 与 audit；SSE 只建立一条连接，1.2 秒合并刷新，15 秒重连，401/403 返回 OIDC 登录。
+- 实时控制层先读取 session 和应用目录，成功后立即提交应用页；目录同步期间不读取次要资源，完成后按顺序读取 overview、plans、tasks、batches、backups、storage、alerts、settings 与 audit。SSE 只建立一条连接，1.2 秒合并刷新，15 秒重连，401/403 返回 OIDC 登录。
 - 应用、任务、快照、告警、审计和批次界面使用服务端游标分页；计划目标、页面关联和应用批量立即备份统一使用 `deployId`。批量操作逐项提交并显示成功/失败数量。范围目录支持查询与分页，范围保存继续由服务端复核。
 - 后端新增快照、批次、任务、告警、审计的稳定时间加 ID 游标查询；安全范围目录按相对路径和类型分页。新增当前租户与排序/筛选字段索引，不修改业务数据。
 - OpenAPI、`schema.d.ts` 和客户端已增加 `cursor`、`limit`、`nextCursor`。
 - 登录页按正式界面的浅色画布、品牌、面板和按钮语言重写，保留 OIDC 交互和身份不一致提示。
 - 修复空快照租户的存储汇总：失败校验数为空时按 `0` 处理，避免概览接口返回 `PHASE5_OPERATION_FAILED`；该类未分类服务端错误现在会连同请求 ID 写入服务端日志。
-- 根据界面复核，设置页恢复 `web.tsx` 的分区菜单、入口卡片和设置项间距；计划弹窗恢复四步向导；告警卡片移除左侧图标并将“告警”和严重程度标签置于左上；应用列表与弹窗优先使用服务端返回的真实应用图标。`designs/web.tsx` 与其 CSS 原文未修改。
+- 根据界面复核，设置页恢复 `web.tsx` 的分区菜单和设置项间距；计划弹窗恢复四步向导；告警卡片移除左侧图标并将“告警”和严重程度标签置于左上；应用列表与弹窗优先使用服务端返回的真实应用图标。`designs/web.tsx` 与其 CSS 原文未修改。
 - 修复应用列表遗漏 `databaseFindings` 的问题：服务端现为每个当前页实例返回已保存的 SQLite 与其他数据库检测结果，前端把受支持 SQLite 明确显示为 `SQLite 3 · 数量`。应用标识直接使用懒猫目录返回的图标地址，并在加载失败时回退为首字母标识；图像请求不发送来源页地址。全部空状态继续复用源设计的 `.empty` 类，并由共用组件保证图标与文字纵向、横向居中；所有数据表的操作组按最左侧图标对齐。`styles.css` 未修改。
+- 2026-08-31：按后续界面反馈将应用列表的任务/快照入口收纳到应用详情弹窗，单应用创建计划固定当前实例；设置页去掉顶部重复入口、重新验证会话和管理员能力卡片，移动端保留可横向滚动的侧栏目录。数据库标签聚合并标注同类结果数量，未知数据库显示本地化名称并在详情解释 SQLite 格式头判定。`npm run build --prefix apps/web`、`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server` 与 `git diff --check` 通过。
 
 ## 已知限制
 
@@ -25,6 +38,27 @@
 - 2026-08-31：修复首屏被 `/api/session` 阻塞的问题。正式界面现在先渲染应用壳层和当前路由，session、页面资源与 SSE 继续独立加载；浏览器请求慢或被代理取消时不再停留在“正在读取当前账号的数据…”。`npm run build --prefix apps/web`、`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server` 与 `git diff --check` 通过。真实懒猫设备上的代理取消日志仍需回归观察。
 
 - 2026-08-31：复核正式界面的真实 API 数据链路。保留 `live.ts` 对 session、应用目录、概览、计划、任务、批次、快照、存储、告警、设置和审计接口的读取；新增应用目录同步状态回读与运行中轮询，设置页补齐异步设置初始化；后端仅将游标错误映射为 `INVALID_CURSOR`，其他目录读取失败返回 `APPLICATION_CATALOG_UNAVAILABLE`。`npm run build --prefix apps/web`、`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server` 与 `git diff --check` 通过。真实平台数据和 SDK 目录查询仍需现场验证。
+
+- 2026-08-31：补齐网关连接未返回时的前端故障边界。每个同源 API 请求在 15 秒后中止并返回 `REQUEST_TIMEOUT`；应用壳层和各页面仍可渲染，顶部显示可执行的“重新加载”入口。该改动不改变 OIDC、应用目录、`appvar`、租户或备份写入边界。`npm run build --prefix apps/web`、`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server`、`lzc-cli project release --output cloud.lazycat.app.mimi-app-backup-v0.1.1.lpk`、`lzc-cli lpk info`、`lzc-cli lpk lint` 与 `git diff --check` 通过。LPK 版本为 `0.1.1`，未安装、部署、发布、推送或创建合并请求。真实懒猫设备仍需观察网关取消请求后的页面与重试行为。
+
+- 2026-08-31：补齐身份范围修复的运营计数链路。概览、设置、告警、审计、事件和概览存储汇总现在按会话 `gateway_uid` 读取或写入；目录服务进程首次收到某个租户请求时会执行一次同步，自动替换旧版本将部署 ID 当作租户留下的目录结果。未启用 `other_uid` 或管理员跨用户范围。Go 构建与 `git diff --check` 通过；真实设备需升级包含本修复的 LPK 后验证管理员账号的应用数量。
+
+- 2026-08-31：修复目录同步将 `LAZYCAT_APP_DEPLOY_UID` 当成用户 UID 的错误。服务启动阶段不再使用部署标识执行 `QueryApplication`；每个已认证目录请求从会话 `gateway_uid` 创建当前租户同步器，SDK 的 `WithRealUID`、`only_owner` 和响应 owner 复核均使用同一个网关 UID。首次读取返回 `RUNNING` 状态并由前端轮询，避免同步协程尚未写入状态时误报空账号。`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server`、`npm run build --prefix apps/web`、`lzc-cli project release --output cloud.lazycat.app.mimi-app-backup-v0.1.0.lpk`、`lzc-cli lpk info`、`lzc-cli lpk lint` 与 `git diff --check` 通过。按项目规则固定 LPK 版本 `0.1.0`，同名产物已覆盖；未安装、部署、发布、推送或创建合并请求。真实懒猫设备仍需验证 SDK 返回的当前用户目录与 appvar 投影。
+
+- 2026-08-31：真实设备确认新二进制正在运行，且当前租户目录库已有 67 个应用实例；排除旧服务与空目录。前端首屏原先会同时发出 10 个同源读取请求，入口代理随即记录多条 `context canceled`，应用列表需要等待整批请求才写入状态。现改为 session 后单独请求应用目录并立即写入；目录同步完成后才顺序读取其他页面资源，SSE、目录轮询和手动重试期间还会合并为一个刷新流程。该变更不触及 OIDC、租户、appvar、网盘或备份权限边界。`npm run build --prefix apps/web`、`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server`、`lzc-cli project release --output cloud.lazycat.app.mimi-app-backup-v0.1.0.lpk`、`lzc-cli lpk info`、`lzc-cli lpk lint` 与 `git diff --check` 通过。LPK 仍为 `cloud.lazycat.app.mimi-app-backup` / `0.1.0`，SHA-256 为 `919d0661e7c278f85ef25921fbb565bcd1d52f9878e263e141b58ef1c0f604ba`；未安装、部署、发布、推送或创建合并请求。真实设备需重新安装同版本包后回归确认应用列表。
+
+- 2026-08-31：用户明确要求把包版本改为 `0.1.2`，以便设备安装器将这次前端请求编排修复识别为升级。`npm run build --prefix apps/web`、`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server`、`lzc-cli project release --output cloud.lazycat.app.mimi-app-backup-v0.1.2.lpk`、`lzc-cli lpk info`、`lzc-cli lpk lint` 与 `git diff --check` 通过。产物包标识为 `cloud.lazycat.app.mimi-app-backup`，版本为 `0.1.2`，SHA-256 为 `50845b10939ca42eee00c524c7800998ce211937289b4cb5847d0161e39327a1`；未安装、部署、发布、推送或创建合并请求。
+
+- 2026-08-31：收口入口代理取消和浏览器缓存边界。`http: proxy error: context canceled` 由 LZC HTTP 入口代理在下游浏览器关闭、导航、主动超时或连接中断时记录；业务服务内没有反向代理。首屏以串行读取、合并刷新和独立资源提交避免并发风暴；普通 GET API 由 Go 服务在 12 秒后主动返回 `REQUEST_TIMEOUT`，前端 15 秒取消仅作为入口失联的最后保护。SSE 与 POST/PUT 不使用读取时限，避免服务端已提交却在前端误报失败。API 和 `index.html` 返回 `no-store`，带内容哈希的 Vite `assets/` 使用 immutable 长缓存。用户刷新或关闭页面仍可能留下单条代理取消日志，该连接生命周期不再会让页面停在统一加载态，也不会取消已脱离请求上下文的目录同步或备份入队。`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server`、`npm run build --prefix apps/web`、`lzc-cli project release --output cloud.lazycat.app.mimi-app-backup-v0.1.2.lpk`、`lzc-cli lpk info` 和 `lzc-cli lpk lint` 通过。新包大小为 19,901,952 字节，SHA-256 为 `cab8ded4783e80ccf54f0e503ab6d5322315f222a54c9f5e39ad8b908fcad45f`；未运行测试套件，未安装或部署。
+
+- 2026-08-31：用户要求将包标识恢复为 Git 初始提交使用的 `cloud.lazycat.app.backup`，包内服务路由同步改为 `web.cloud.lazycat.app.backup.lzcapp:8080`。版本保持已明确使用的 `0.1.2`；该变更会让平台按初始包身份识别应用，不修改子域名、OIDC、权限、多实例或业务数据逻辑。`lzc-cli project release --output cloud.lazycat.app.backup-v0.1.2.lpk`、`lzc-cli lpk info` 和 `lzc-cli lpk lint` 通过；包内 `package.yml` 和 manifest 路由已抽取复核。产物大小为 19,901,952 字节，SHA-256 为 `af893ad8af6405f6ab5f284a82913e12c00fa17244092dde545d3e968eb0ab49`；未安装、部署、发布、推送或创建合并请求。
+
+- 2026-08-31：根据真实设备日志定位并修复页面超时。设备在 `12:28:59` 输出服务启动日志、`12:29:01` 通过内部健康检查，证明新后端和恢复后的包路由已经运行；问题不是旧实例、前端缓存、打包目录或包标识。实际故障位于 `Store.ListInstances`：SQLite 连接池只允许一个连接，应用列表仍持有 `rows` 时又逐项查询数据库检测结果，内层查询无法获得连接，形成自锁。浏览器或读取超时取消该阻塞请求后，LZC 入口代理记录 `http: proxy error: context canceled`。现改为先读取并关闭列表结果集、裁剪当前页，再查询每个可见实例的数据库检测结果。设置页长期停在“正在读取设置”还有一层前端顺序问题：设置请求原先排在应用目录同步和其他次要页面之后，目录为 `RUNNING` 时根本不会发出；现把设置作为会话成功后的第一个轻量读取，不再依赖目录同步。用户刷新、关闭页面或 SSE 重连仍可能产生单条正常的连接取消日志，但不会再由应用列表自锁触发持续超时。`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server`、`npm run build --prefix apps/web`、`lzc-cli project release --output cloud.lazycat.app.backup-v0.1.2.lpk`、`lzc-cli lpk info`、`lzc-cli lpk lint` 与 `git diff --check` 通过。新产物大小为 19,901,952 字节，SHA-256 为 `bb9b7a744a90ef8fbb2295676e37efab86d26bad9f5a39dc3899e4c585556371`；未安装、部署、发布、推送或创建合并请求。
+
+- 2026-08-31：用户确认目标包标识为 `cloud.lazycat.app.mimi-app-backup`。`package.yml` 和内部服务路由已同步更新，版本保持 `0.1.2`。`lzc-cli project release --output cloud.lazycat.app.mimi-app-backup-v0.1.2.lpk`、`lzc-cli lpk info`、`lzc-cli lpk lint` 与 `git diff --check` 通过；产物大小为 19,901,952 字节，SHA-256 为 `6e5095cbbb72534e0f205ec52cd5f90800e6c2f2d25ecaeee7590855ad41c79c`。未安装、部署、发布、推送或创建合并请求。
+
+- 2026-08-31：用户完成真机回归并确认页面读取已恢复正常。应用列表 SQLite 单连接自锁、设置读取顺序和 `context canceled` 的完整现象、排除项、根因、修复、验证及回归检查已归档为 `docs/BUG_TRACKER.md` 的 `BUG-20260831-001`，状态为“已修复”。
+- 2026-08-31：预发布阶段暂时固定 `package.yml` 版本为 `0.1.0`，重新执行 `sh lzc/build-package.sh` 与 `lzc-cli project build -o cloud.lazycat.app.mimi-app-backup-v0.1.0.lpk`；`lzc-cli lpk info` 确认包标识为 `cloud.lazycat.app.mimi-app-backup`、版本为 `0.1.0`，`lzc-cli lpk lint` 无警告。产物大小为 19,908,608 字节，SHA-256 为 `820081fb344e3c24c10427fbbcae63899d34a3e877fd60adeb138ebc81139b16`；未安装、部署、发布、推送或创建合并请求。
 
 ## 本地检查
 
@@ -75,7 +109,7 @@
 | 待处理 | `designs/web.tsx:157-158` | `apps/web/src/ui/pages.tsx:46-47` | 设计批量选择按 `appid`，提供“批量立即备份”“批量创建计划”“批量重新检测”；生产按决策要求改用 `deployId`，只提供“逐项立即备份”，并用浏览器 `alert` 汇报提交结果，缺少批量建计划、批量重新检测和源设计的状态统计。 | 单实例备份、建计划、实例 probe 接口均有；没有独立批量接口，逐项提交可复用现有接口。 |
 | 待处理 | `designs/web.tsx:158` | `apps/web/src/ui/pages.tsx:44-47` | 设计“重新扫描全部”逐个触发本地 `onReprobe`；生产改为一次 `POST /api/applications/sync`，这是符合真实同步模型的功能调整。需要确认按钮完成后是否应显示同步状态或刷新反馈，而不是只等待 SSE/刷新。 | `syncApplications` 有，返回 `SyncStatus`；生产当前没有显式展示同步状态。 |
 | 待处理 | `designs/web.tsx:158` | `apps/web/src/ui/pages.tsx:47` | 设计表格 11 列：应用/appid、部署实例、运行/模式、数据概览、数据库特征、可备份性、保护状态、最近备份、下次执行、操作；生产 9 列，合并了应用与 `deployId`，去掉版本、运行状态、目录数、保护状态等信息，立即备份图标从 `Play` 改为 `Archive`。`protectionStatus` 可用但未展示。 | 应用版本、总大小、文件数、SQLite 数、跳过数、保护状态有；运行状态和目录数没有。 |
-| 待处理 | `designs/web.tsx:158` | `apps/web/src/ui/pages.tsx:47` | 设计每行操作包括立即备份、创建计划、详情、任务、快照、重新检测；生产只有详情、重新检测、立即备份，计划/任务/快照入口全部移出应用列表。相关弹窗和接口仍存在。 | `startBackup`、`createPlan`、`tasks`、`backups`、`probeInstance` 均有，属于已有 API 可恢复入口。 |
+| 已完成 | `designs/web.tsx:158` | `apps/web/src/ui/pages.tsx:47`, `apps/web/src/ui/dialogs.tsx:331-390` | 应用列表移除任务和快照图标；查看详情弹窗提供创建计划、查看任务和查看快照入口。单应用创建计划固定当前 `deployId`，批量入口仍可多选。 | `startBackup`、`createPlan`、`tasks`、`backups`、`probeInstance` 均有。 |
 | 待处理 | `designs/web.tsx:184` | `apps/web/src/ui/dialogs.tsx:49`, `apps/web/src/ui/live.ts:112-116` | 设计自定义范围在计划向导中复用递归 `TreePreview` 和本地文件树；生产改为服务端安全相对路径目录查询，并支持搜索、可选标记和下一页。这是安全范围和游标分页要求带来的结构差异，需要确认是否保留设计的树状视觉（API 目录结果本身是扁平列表）。 | `/api/instances/{deployId}/backup-scope`、`q`、`cursor`、`limit`、`selectable` 均有。 |
 
 ### 4. 计划页与计划弹窗
@@ -123,8 +157,8 @@
 
 | 状态 | 源文件 | 生产文件 | 差异描述 | API 可用性评估 |
 | --- | --- | --- | --- | --- |
-| 待处理 | `designs/web.tsx:171-181` | `apps/web/src/ui/pages.tsx:74-98` | 设置页分区菜单、入口卡片和总体布局保持一致；生产增加中英文切换、服务端读取/保存和分页审计列表，设计为中文静态内容。此项属于真实数据与国际化调整，需要逐项确认文案而非回退静态文本。 | `settings`、`updateSettings`、`audit` 和 `cursor` 均有。 |
-| 待处理 | `designs/web.tsx:174` | `apps/web/src/ui/pages.tsx:90` | 设计账户页有“模拟会话过期”按钮；生产移除该模拟入口，改为真实重新登录、重新验证和退出登录。模拟按钮属于设计演示行为，按需求应删除；生产重新登录/重新验证均跳 OIDC，退出调用 `/auth/logout`。 | OIDC 登录/退出有；模拟过期无，也不应新增。 |
+| 已完成 | `designs/web.tsx:171-181` | `apps/web/src/ui/pages.tsx:74-98` | 设置页只保留左侧分区菜单，右侧直接展示当前条目内容；顶部重复的设置入口卡片已移除，移动端侧栏改为可横向滚动。中英文切换、服务端读取/保存和分页审计列表继续保留。 | `settings`、`updateSettings`、`audit` 和 `cursor` 均有。 |
+| 已完成 | `designs/web.tsx:174` | `apps/web/src/ui/pages.tsx:90` | 账户页保留真实重新登录和退出登录，移除重新验证会话按钮与管理员能力卡片。 | OIDC 登录/退出有；不新增模拟或重复会话操作。 |
 | 待处理 | `designs/web.tsx:175-179` | `apps/web/src/ui/pages.tsx:91-95` | 设计外观、备份偏好、通知、审计、权限环境均使用本地或固定值；生产能保存 locale/timezone/catchUp/retry/notify 字段，但系统通知、连续失败升级、空间不足、超出窗口、每日摘要等开关仍只在当前页面更新并提示“没有服务端保存字段”。 | OpenAPI `Settings` 仅有 locale、timezone、catchUp、retry、retention、notifyFirstFailure、notifySuccess；其余字段无。 |
 | 待处理 | `designs/web.tsx:178` | `apps/web/src/ui/pages.tsx:94` | 设计审计区展示固定的两条记录和“最近索引重建”时间；生产改为当前租户审计游标列表，并显示服务端最新记录，符合真实数据要求，但缺少“索引重建”说明。 | 审计接口和分页有；没有索引重建时间字段。 |
 | 待处理 | `designs/web.tsx:179` | `apps/web/src/ui/pages.tsx:95` | 设计权限环境显示当前应用数量、LzcOS 版本和后台运行状态；生产显示当前应用数量、后台运行状态和当前租户，移除了固定的 LzcOS `v1.4.8`。固定版本按需求不应保留。 | 当前租户、应用数量有；LzcOS 版本无。 |
@@ -135,8 +169,8 @@
 | --- | --- | --- | --- | --- |
 | 待处理 | `designs/web.tsx:208-209` | `apps/web/src/ui/App.tsx:21,25`, `apps/web/src/ui/dialogs.tsx:9-35` | 设计弹窗类型包括 setup、confirm/shared、batch-confirm、app、plan、job、batch、snapshot、alert、plan-wizard，并支持返回上一级；生产类型改为 app、backup、plan、plan-detail、task、batch、snapshot、alert，没有 setup、批量确认、confirm/shared 分支，也没有弹窗堆栈返回。首次向导按需求删除；其余跨详情入口需确认。 | 单备份、计划、任务、批次、快照、告警接口有；弹窗堆栈是前端行为。 |
 | 待处理 | `designs/web.tsx:209` | `apps/web/src/ui/dialogs.tsx:20-23` | 设计关闭按钮有 `aria-label="关闭"`、16px 图标，且可通过设计的返回按钮回到上级详情；生产关闭按钮没有 aria-label，图标默认尺寸，弹窗头没有返回按钮。 | 不适用，属于前端无障碍与交互。 |
-| 待处理 | `designs/web.tsx:186,209` | `apps/web/src/ui/dialogs.tsx:41-58` | 设计应用详情展示运行状态、数据目录状态、数据大小/文件/目录/SQLite/跳过项、只读数据范围树、保护状态/历史成功率，并提供创建/编辑计划、查看任务历史、查看备份库；生产应用详情只显示基本字段、数据库检测和关联计划，缺少上述数据概览、范围树、保护状态和三个操作按钮。 | 应用详情字段大部分来自 `ApplicationInstance`；目录树需另读 backup-scope，历史成功率需从任务/快照推导；三个关联接口均有。 |
-| 待处理 | `designs/web.tsx:209` | `apps/web/src/ui/dialogs.tsx:55-59` | 设计立即备份确认显示文件数、SQLite 数、共享实例二次提示、“立即执行/我已了解并继续”；生产只显示 `deployId` 和总字节，按钮为“立即入队”，没有第二条“不写回/不直接恢复”提示。需求允许单实例直接入队，但视觉提示内容仍有差异。 | 手动备份接口有；共享风险字段由应用实例提供，确认参数已标为兼容字段。 |
+| 已完成 | `designs/web.tsx:186,209` | `apps/web/src/ui/dialogs.tsx:41-58`, `331-390` | 应用详情展示基本信息、数据库检测、关联计划，并提供创建计划、查看任务和查看快照入口；未知数据库与有效 SQLite 的判定规则在详情中明确说明。 | 应用详情字段和三个关联接口均可由现有服务端 API 支持。 |
+| 已完成 | `designs/web.tsx:209` | `apps/web/src/ui/dialogs.tsx:55-59` | 立即备份确认保留实例、容量与单实例风险提示，主按钮文案统一为“立即备份”。 | 手动备份接口有；共享风险字段由应用实例提供，确认参数已标为兼容字段。 |
 | 待处理 | `designs/web.tsx:192-196` | `apps/web/src/ui/dialogs.tsx:61-97` | 计划向导四步结构基本保留，但生产把范围改为服务端安全目录和游标、把目标键改为 `deployId`，符合需求；生产 Cron 有效提示从设计的“解析执行时间”改为“Cron 格式有效”，且编辑已有计划时通知开关默认值固定为 true，需修正或确认。 | 计划及范围 API 有；Cron 解析字段由服务端校验。 |
 | 待处理 | `designs/web.tsx:199` | `apps/server/internal/httpapi/auth_page.go:48-101`（生产登录页不在 `apps/web/src/ui`） | 设计登录视图嵌在 React 中，有 `LAZYCAT OIDC` 提示、锁图标提示和“使用懒猫账号登录”按钮；生产由 Go 渲染真实 OIDC 页面，保留浅色画布、品牌和显式 POST 登录，但没有锁图标提示，品牌副标题和按钮文案略有差异，图标路径为 `/assets/lzc-icon.png`。 | `/auth/login`、`return_to`、OIDC 回调和身份不一致提示均有；不是前端 API 缺失。 |
 | 待处理 | `designs/web.tsx:202-209` | `apps/web/src/ui/live.ts:4-119`, `apps/web/src/api/client.ts:112-177` | 设计数据来自本地 `INITIAL_*` 并模拟备份进度；生产通过一次 `useLiveBackupData` 并行读取 session/overview/应用/计划/任务/批次/快照/存储/告警/设置/审计，SSE 1.2 秒合并、15 秒重连、分页状态保留，符合需求。差异主要是生产不再填充模拟记录，需在真实平台补充空数据、401/403、分页和 SSE 状态的界面核验。 | 所需 REST、SSE、游标与错误码客户端均有；真实平台证据仍待执行。 |
@@ -149,13 +183,14 @@
 | --- | --- | --- |
 | 已完成 | 全局壳层与共用组件 | 已恢复 `MIMI APP BACKUP · V1` 眉题、模式徽章的锁/警告图标和文案、状态徽章的语义图标，以及开关的 `aria-pressed`。侧边栏按本次需求移除了 `Workspace`、英文应用名和版本号。应用图标只加载服务端返回的同源地址，避免外部地址在打开页面时获取用户网络信息。 |
 | 已完成 | 概览页 | 已恢复“系统与保护概览”、立即备份入口、8 个真实 KPI、保护概览/计划/告警直达入口，以及计划频率、目标数和时区。首次使用向导、固定配额和模拟吞吐指标按既有决定继续删除。 |
-| 已完成 | 应用页 | 已恢复 8 个可由接口支持的筛选页签、清除筛选、`deployId` 批量建计划和逐项重新检测；列表接入真实数据库检测结果、保护状态、版本、数据统计，以及立即备份、建计划、详情、按实例查看任务、跨快照分页查找详情和重新检测操作。 |
+| 已完成 | 应用页 | 已恢复 8 个可由接口支持的筛选页签、清除筛选、`deployId` 批量建计划和逐项重新检测；列表接入真实数据库检测结果、保护状态、版本和数据统计，以及立即备份、建计划、详情和重新检测操作。按实例查看任务与快照入口收纳到详情弹窗，单应用创建计划固定当前实例。 |
 | 已完成 | 计划向导 | 计划目标不再依赖应用页当前 15 条记录：向导使用专用的应用搜索/游标数据源，并能回读已编辑计划的目标。自定义范围进入第三步会自动读取安全目录；未选中任何目录或文件时不能保存。通知开关现在保存到真实的全局通知设置。 |
-| 已完成 | 任务与批次 | 任务页恢复真实运行/排队/24 小时失败计数；批次显示任务、成功和失败统计并使用游标分页。按应用打开任务页使用 `deploy_id` 查询；批次内任务可打开详情，任务详情可打开关联快照。总队列暂停仍保持禁用，因为服务端没有该接口。 |
+| 已完成 | 任务与批次 | 任务页恢复真实运行/排队/24 小时失败计数，并移除“最近备份批次”组件；批次数据仍由服务端提供给计划状态和关联详情，继续使用游标分页。按应用打开任务页使用 `deploy_id` 查询；任务详情可打开关联快照。总队列暂停仍保持禁用，因为服务端没有该接口。 |
 | 已完成 | 表格与分页 | 应用、任务、快照表的操作标题及按钮统一右对齐，操作按钮改用源设计相同的小图标尺寸；所有服务端游标列表默认每页 15 条并可切换 15/30/50/100 条。 |
 | 已完成 | 游标范围校验 | 游标已绑定当前租户、查询类型和已支持的筛选条件；把游标用于其他筛选、其他应用范围或其他租户时，服务端返回 `INVALID_CURSOR`，前端从第一页重新读取。 |
 | 已完成 | 备份库与快照详情 | 快照表已显示应用版本、部署模式、原始大小、ZIP、SQLite、校验时间、保留和存储状态。快照详情已增加应用头部、捕获时间、模式、范围、跳过/警告、关联 ID、前 30 条可搜索文件索引和关联任务入口；逐文件 SHA-256 没有 API 字段，因此不显示。 |
 | 已完成 | 告警页 | 已补未读点；查看关联对象会按真实引用打开任务、快照或应用；任务引用才显示并调用重试，其他告警不再显示无效的“立即重试”；已补真实的已处理操作。 |
-| 已完成 | 设置页 | 删除所有仅在当前页面翻转、但没有 API 字段的通知开关；保留并保存接口支持的语言、时区、补跑、重试、首次失败通知和成功通知。审计列表已接入分页。 |
+| 已完成 | 设置页 | 删除所有仅在当前页面翻转、但没有 API 字段的通知开关；保留并保存接口支持的语言、时区、补跑、重试、首次失败通知和成功通知。移除顶部重复菜单、重新验证会话按钮和管理员能力卡片；审计列表已接入分页，移动端侧栏菜单可滚动。 |
 | 已完成 | 弹窗路由 | 已恢复弹窗堆栈的“返回上一级”操作；关闭按钮补齐标签和 16px 图标。 |
 | 按决策保留 | 无接口/演示字段 | 运行状态、目录数量、百分比进度、任务日志和吞吐、逐文件 SHA-256、固定 100 GB 配额、索引重建、LzcOS 固定版本、计划连续失败次数、告警具体修复文案和全量级别筛选继续不显示；这些字段没有真实接口，或属于已经禁止的演示数据。 |
+- 2026-08-31：修复目录同步将 `LAZYCAT_APP_DEPLOY_UID` 当成用户 UID 的错误。服务启动阶段不再使用部署标识执行 `QueryApplication`；每个已认证目录请求从会话 `gateway_uid` 创建当前租户同步器，SDK 的 `WithRealUID`、`only_owner` 和响应 owner 复核均使用同一个网关 UID。首次读取返回 `RUNNING` 状态并由前端轮询，避免同步协程尚未写入状态时误报空账号。`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server`、`npm run build --prefix apps/web`、`lzc-cli project release --output cloud.lazycat.app.mimi-app-backup-v0.1.0.lpk`、`lzc-cli lpk info`、`lzc-cli lpk lint` 与 `git diff --check` 通过。按项目规则固定 LPK 版本 `0.1.0`，同名产物已覆盖；未安装、部署、发布、推送或创建合并请求。真实懒猫设备仍需验证 SDK 返回的当前用户目录与 appvar 投影。

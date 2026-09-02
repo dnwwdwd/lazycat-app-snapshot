@@ -8,7 +8,7 @@
 
 普通文件使用只读打开和流式 ZIP 写入。标准 SQLite 通过 `modernc.org/sqlite` 暴露的 SQLite Online Backup API 生成临时副本，执行 `quick_check` 后写入 ZIP；不复制原始 SQLite、WAL、SHM 或 journal 文件，也不因 SQLite 失败退回原始复制。
 
-存储层只接收相对路径，并固定在当前用户 `/lzcapp/document/LazycatAppBackup` 根内。ZIP 先写入 `_partial/<job_id>/`，计算 SHA-256 后移入 `yyyyMMddTHHmmss.SSSZ/<deploy_id>/snapshot.zip`；外部 `manifest.json` 最后写入。没有完成外部 manifest 的目录不记录为快照。控制库保存租户绑定的作业与快照安全元数据，不保存源绝对路径、Token 或 Cookie。
+存储层只接收相对路径，并固定在当前用户 `/lzcapp/document/MimiAppBakcup` 根内。ZIP 先写入 `_partial/<job_id>/`，计算 SHA-256 后移入 `<deploy_id>/<yyyy-MM-dd_HH-mm-ss.SSS>_<timezone-safe>/snapshot.zip`；外部 `manifest.json` 最后写入。没有完成外部 manifest 的目录不记录为快照。控制库保存租户绑定的作业与快照安全元数据，不保存源绝对路径、Token 或 Cookie。
 
 阶段 3 不实现计划、批量任务、通用租约队列、重试、补跑、保留、删除、导出或 SSE。这些能力仍使用阶段 4 的数据模型和调度边界。
 

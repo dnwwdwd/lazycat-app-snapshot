@@ -2,7 +2,7 @@
 
 **Requirement:** REQ-20260829-007  
 **Status:** 本地实现完成；真实平台验证待执行  
-**Last updated:** 2026-08-29
+**Last updated:** 2026-09-01
 
 ## 本次实现
 
@@ -20,6 +20,7 @@
 
 ## 本地检查
 
+- 2026-09-01：`gofmt -w apps/server/internal/backup/service.go`、`go build -o /tmp/mimi-backup-server ./apps/server/cmd/server`、`npx vite build`（`apps/web/`）和 `git diff --check`：通过。
 - 计划列表与快照详情收口后执行 `npx vite build`（`apps/web/`）和 `git diff --check`：通过。
 - `go build -o /tmp/mimi-backup-server ./apps/server/cmd/server`：通过。
 - `npm run api:generate --prefix apps/web`：通过。
@@ -39,3 +40,4 @@
 - 在真实双用户环境确认范围目录接口与计划执行只读取当前用户 appvar。
 - 验证目录失效、单文件改名、类型变化与源根不可读后的暂停原因、任务状态、告警和审计。
 - 验证重新选择范围后旧排队任务取消、新修订恢复计划，运行中的旧修订任务仍按原范围安全结束。
+- 验证包含标准 SQLite 的自定义范围定时计划：目标应用有短暂写入或锁竞争时，Online Backup 在有界等待后完成；不可恢复的 SQLite 错误保持失败，不降级为普通文件复制。
