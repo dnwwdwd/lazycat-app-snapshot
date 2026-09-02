@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Archive,
   Bell,
@@ -6,13 +6,14 @@ import {
   HardDrive,
   Layers3,
   ListTodo,
+  LoaderCircle,
   Menu,
   Settings,
   ShieldCheck,
   X,
 } from "lucide-react";
 import { ApiError } from "../api/client";
-import { apiErrorLabel, BrandLogo } from "./components";
+import { apiErrorLabel, BrandLogo, toastMessage } from "./components";
 import { Dialog } from "./dialogs";
 import {
   AlertsPage,
@@ -66,6 +67,8 @@ export default function App() {
   );
   const [mobile, setMobile] = useState(false);
   const [dialog, setDialog] = useState<any>();
+  const [globalNotice, setGlobalNotice] = useState("");
+  const globalNoticeTimer = useRef<number | undefined>(undefined);
   const [locale, setLocale] = useState<"zh-CN" | "en-US">("zh-CN");
   const timezone = live.state.settings?.timezone || "Asia/Shanghai";
   useEffect(() => {
@@ -78,6 +81,12 @@ export default function App() {
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
+  useEffect(
+    () => () => {
+      if (globalNoticeTimer.current !== undefined)
+        window.clearTimeout(globalNoticeTimer.current);
+    },
+  );
   useEffect(() => {
     const listener = () => setRoute(fromPath(window.location.pathname));
     window.addEventListener("popstate", listener);
@@ -106,30 +115,41 @@ export default function App() {
         : undefined;
     });
   const t = (zh: string, en: string) => (locale === "zh-CN" ? zh : en);
+  const notify = (message?: unknown) => {
+    const content = toastMessage(message);
+    if (!content) return;
+    if (globalNoticeTimer.current !== undefined) {
+      window.clearTimeout(globalNoticeTimer.current);
+      globalNoticeTimer.current = undefined;
+    }
+    setGlobalNotice(content);
+    globalNoticeTimer.current = window.setTimeout(() => {
+      setGlobalNotice("");
+      globalNoticeTimer.current = undefined;
+    }, 3200);
+  };
+  const accountName =
+    live.state.session?.displayName || t("当前账号", "Current account");
+  const accountUid = live.state.session?.uid || "—";
+  const accountMeta =
+    accountUid !== "—" &&
+    accountUid.trim().toLocaleLowerCase() !==
+      accountName.trim().toLocaleLowerCase()
+      ? accountUid
+      : t("已连接", "Connected");
   const badge = (key: Route) =>
     key === "applications"
-      ? live.state.applications.items.length
+      ? live.state.overview?.applicationCount ?? 0
       : key === "plans"
         ? live.state.plans.length
         : key === "tasks"
-          ? live.state.tasks.items.filter(
-              (item: any) =>
-                ![
-                  "SUCCEEDED",
-                  "SUCCEEDED_WITH_WARNINGS",
-                  "FAILED",
-                  "CANCELLED",
-                  "TIMED_OUT",
-                  "SKIPPED",
-                  "INTERRUPTED",
-                ].includes(item.status),
-            ).length
+          ? live.state.overview?.taskCount ?? 0
           : key === "backups"
-            ? live.state.backups.items.length
+            ? live.state.storage?.snapshotCount ??
+              live.state.overview?.storage?.snapshotCount ??
+              0
             : key === "alerts"
-              ? live.state.alerts.items.filter(
-                  (item: any) => item.status === "OPEN",
-                ).length
+              ? live.state.overview?.alertCount ?? 0
               : undefined;
   // Render the shell and route immediately. Session and page resources are
   // loaded independently; a slow or cancelled session request must not leave
@@ -150,7 +170,7 @@ export default function App() {
         movePage={live.movePage}
         open={open}
         run={live.run}
-        navigate={navigate}
+        initialLoading={live.initialLoading}
       />
     ) : route === "plans" ? (
       <PlansPage
@@ -158,7 +178,6 @@ export default function App() {
         locale={locale}
         timezone={timezone}
         open={open}
-        run={live.run}
       />
     ) : route === "tasks" ? (
       <TasksPage
@@ -214,7 +233,7 @@ export default function App() {
           <div className="brand">
             <BrandLogo />
             <div>
-              <div className="brand-name">咪咪应用备份</div>
+              <div className="brand-name">{t("咪咪应用备份", "Mimi App Backup")}</div>
             </div>
           </div>
           <Navigation
@@ -230,12 +249,11 @@ export default function App() {
               </span>
               <span style={{ minWidth: 0, flex: 1 }}>
                 <span className="user-name">
-                  {live.state.session?.displayName ||
-                    t("当前账号", "Current account")}
+                  {accountName}
                 </span>
                 <span className="user-meta">
                   <span className="status-dot" />
-                  {live.state.session?.uid || "—"}
+                  {accountMeta}
                 </span>
               </span>
             </button>
@@ -245,7 +263,7 @@ export default function App() {
           <div className="mobile-bar">
             <div className="mobile-brand">
               <BrandLogo small />
-              咪咪应用备份
+              {t("咪咪应用备份", "Mimi App Backup")}
             </div>
             <button
               className="icon-button"
@@ -267,6 +285,15 @@ export default function App() {
                   badge={badge}
                 />
               </div>
+            </div>
+          )}
+          {live.initialLoading && (
+            <div className="global-loading" role="status" aria-live="polite">
+              <LoaderCircle className="spin" />
+              {t(
+                "正在加载当前账号的应用数据…",
+                "Loading application data for this account…",
+              )}
             </div>
           )}
           {live.error && (
@@ -295,10 +322,18 @@ export default function App() {
           run={live.run}
           scope={live.scope}
           applications={live.applications}
+          navigate={navigate}
+          setFilter={live.setFilter}
           open={open}
           back={back}
           canBack={Boolean(dialog.stack?.length)}
+          notify={notify}
         />
+      )}
+      {globalNotice && (
+        <div className="toast" role="status" aria-live="polite">
+          {globalNotice}
+        </div>
       )}
     </>
   );

@@ -46,6 +46,7 @@ export type AuditList = components["schemas"]["AuditList"];
 const chineseErrorMessages: Record<string, string> = {
   IDENTITY_MISMATCH: "当前登录会话与懒猫账号不一致，请重新登录。",
   SESSION_REQUIRED: "登录会话已失效，请重新登录。",
+  REQUEST_TIMEOUT: "请求等待超时，请重新加载。",
   RESOURCE_NOT_FOUND: "当前账号下未找到该应用实例。",
   INVALID_CURSOR: "列表分页状态已失效，请重新加载。",
   INVALID_LIMIT: "每页数量必须在 1 到 200 之间。",
@@ -82,11 +83,43 @@ export function messageForError(code: string, fallback: string) {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-	...init,
-    credentials: "same-origin",
-    headers: { Accept: "application/json", ...(init?.headers ?? {}) },
-  });
+  // The Lazycat ingress can keep a browser read open after its upstream has
+  // gone away. Bound GET requests so a stalled route becomes a visible,
+  // retryable state instead of leaving the whole data layer pending forever.
+  // Mutations must not be aborted here: the server may already have committed
+  // them, and reporting a client timeout could make the user submit twice.
+  const method = (init?.method || "GET").toUpperCase();
+  const timeoutMs = method === "GET" ? 15_000 : undefined;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = timeoutMs
+    ? window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs)
+    : undefined;
+  const abort = () => controller.abort();
+  init?.signal?.addEventListener("abort", abort, { once: true });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...init,
+      signal: controller.signal,
+      credentials: "same-origin",
+      headers: { Accept: "application/json", ...(init?.headers ?? {}) },
+    });
+  } catch (caught) {
+    if (timedOut)
+      throw new ApiError(
+        408,
+        "REQUEST_TIMEOUT",
+        messageForError("REQUEST_TIMEOUT", "请求等待超时，请重新加载。"),
+      );
+    throw caught;
+  } finally {
+    if (timeout !== undefined) window.clearTimeout(timeout);
+    init?.signal?.removeEventListener("abort", abort);
+  }
   if (!response.ok) {
     let body: Partial<ApiErrorShape> = {};
     try {
@@ -172,6 +205,7 @@ export const api = {
   settings: () => request<Settings>("/api/settings"),
   updateSettings: (value: Settings) => request<Settings>("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) }),
   audit: (params: URLSearchParams = new URLSearchParams()) => request<AuditList>(withQuery("/api/audit", params)),
-  eventsURL: () => "/api/events",
+  eventsURL: (after?: number) =>
+    after === undefined ? "/api/events" : `/api/events?after=${after}`,
   logout: () => request<void>("/auth/logout", { method: "POST" }),
 };

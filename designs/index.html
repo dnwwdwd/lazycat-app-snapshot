@@ -69,7 +69,6 @@
     .top-btn { width: 36px; height: 36px; border-radius: 11px; background: var(--paper); border: 1px solid var(--line); color: var(--ink-2); display:flex; align-items:center; justify-content:center; position: relative; }
     .top-btn:hover { border-color: var(--sun); color: var(--sun-deep); }
     .alert-dot { width: 7px; height: 7px; border-radius:50%; background: var(--rose); position:absolute; right: 8px; top: 7px; box-shadow:0 0 0 3px var(--paper); }
-    .lang-switch { height: 34px; padding: 0 10px; border-radius: 10px; border:1px solid var(--line); background: var(--paper); font-size: 11px; color: var(--ink-2); }
     .user-menu { display:flex; align-items:center; gap: 8px; padding-left: 7px; border-left: 1px solid var(--line); }
     .user-meta { display: grid; gap: 2px; }
     .user-meta strong { font-size: 12px; }
@@ -408,7 +407,7 @@
     /* Spacing pass: let whitespace and tonal surfaces do the grouping. */
     .topbar { border-bottom: 0; }
     .card { border: 0; }
-    .global-search, .top-btn, .lang-switch, .searchbox, .filter-select, .btn-secondary { border: 0; }
+    .global-search, .top-btn, .searchbox, .filter-select, .btn-secondary { border: 0; }
     .global-search, .searchbox, .filter-select { box-shadow: 0 4px 12px rgba(47,75,120,.04); background:#f7faff; }
     .btn-secondary { box-shadow: 0 5px 14px rgba(47,75,120,.06); }
     .stats-grid { column-gap: 14px; row-gap: 14px; margin: 0 0 18px; }
@@ -434,7 +433,7 @@
     .modal-foot { margin-top: 4px; }
     /* Final no-border pass requested for the visual review. */
     .card, .stat-card, .alert-item, .check-card, .app-hero, .overview-hero, .tree,
-    .modal, .drawer, .global-search, .top-btn, .lang-switch, .searchbox, .filter-select,
+    .modal, .drawer, .global-search, .top-btn, .searchbox, .filter-select,
     .btn-secondary, .pager button, .metric-chip, .step-num, .tenant-card, .setup-intro,
     .wizard-actions, .toolbar, .table-foot, .modal-foot, .drawer-head, .setting-row,
     .plan-card, .mini-row, .queue-row, .activity-item, .risk-box, .tabs, .tab,
@@ -482,7 +481,6 @@
       .top-actions { width:100%; margin-left:0; gap:7px; }
       .global-search { width:auto; min-width:0; flex:1; }
       .top-btn { flex:0 0 38px; }
-      .lang-switch { flex:0 0 auto; padding:0 9px; }
       .user-menu { flex:0 0 38px; width:38px; padding:0; border-left:0; justify-content:center; }
       .user-menu > svg { display:none; }
       .page { padding:24px 16px 38px; }
@@ -544,7 +542,6 @@
       .plan-modal .modal-foot .btn { flex:1 1 108px; }
     }
     @media (max-width: 360px) {
-      .lang-switch { display:none; }
       .topbar { padding:0 10px; }
       .top-actions { gap:6px; }
       .page { padding-left:12px; padding-right:12px; }
@@ -995,8 +992,7 @@
       return <nav className="mobile-nav" aria-label="移动端主导航"><div className="mobile-nav-scroll">{items.map(([id,label,icon])=><button key={id} className={'mobile-nav-item '+(route===id?'active':'')} onClick={()=>navigate(id)} aria-current={route===id?'page':undefined}><Icon name={icon} size={17}/><span>{label}</span>{id==='alerts'&&alertCount>0?<span className="mobile-nav-count">{alertCount}</span>:null}</button>)}</div></nav>;
     }
     function Topbar({ navigate, onAlerts, onSession }) {
-      const [lang, setLang] = useState('中文');
-      return <header className="topbar"><div className="top-actions"><label className="global-search"><Icon name="search" size={15}/><input aria-label="全局搜索" placeholder="搜索应用、快照或任务" onKeyDown={e=>{if(e.key==='Enter') navigate('applications')}} /></label><button className="top-btn" title="告警" onClick={onAlerts}><Icon name="bell" size={16}/><span className="alert-dot"></span></button><button className="lang-switch" onClick={()=>setLang(lang==='中文'?'EN':'中文')}>{lang} <span style={{color:'#9aa9c0'}}>⌄</span></button><button className="user-menu" onClick={onSession}><span className="avatar" style={{width:31,height:31,fontSize:11}}>林</span><span className="user-meta"><strong>林墨</strong><span>NORMAL · 会话有效</span></span><Icon name="chevron" size={14}/></button></div></header>;
+      return <header className="topbar"><div className="top-actions"><label className="global-search"><Icon name="search" size={15}/><input aria-label="全局搜索" placeholder="搜索应用、快照或任务" onKeyDown={e=>{if(e.key==='Enter') navigate('applications')}} /></label><button className="top-btn" title="告警" onClick={onAlerts}><Icon name="bell" size={16}/><span className="alert-dot"></span></button><button className="user-menu" onClick={onSession}><span className="avatar" style={{width:31,height:31,fontSize:11}}>林</span><span className="user-meta"><strong>林墨</strong><span>NORMAL · 会话有效</span></span><Icon name="chevron" size={14}/></button></div></header>;
     }
 
     function ApplicationsPage({ onOpenDetail, onBackup, onPlan, showToast }) {

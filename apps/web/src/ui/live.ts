@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api/client";
+import { sendBrowserNotification } from "./notifications";
 
 export type PageKey =
   "applications" | "backups" | "batches" | "tasks" | "alerts" | "audit";
@@ -10,6 +11,9 @@ type PageState = {
   history: string[];
   cursor?: string;
   limit: number;
+  loaded: boolean;
+  loading: boolean;
+  error: boolean;
 };
 type LiveError = { code: string; fallback?: string };
 type LiveState = {
@@ -27,7 +31,23 @@ type LiveState = {
   audit: PageState;
 };
 
-const emptyPage = (): PageState => ({ items: [], history: [], limit: 15 });
+const emptyPage = (): PageState => ({
+  items: [],
+  history: [],
+  limit: 15,
+  loaded: false,
+  loading: false,
+  error: false,
+});
+const pageState = (value: { items?: any[]; nextCursor?: string }, limit: number): PageState => ({
+  items: value.items || [],
+  nextCursor: value.nextCursor,
+  history: [],
+  limit,
+  loaded: true,
+  loading: false,
+  error: false,
+});
 const initialState = (): LiveState => ({
   plans: [],
   applications: emptyPage(),
@@ -47,6 +67,47 @@ const paged = new Set<PageKey>([
   "audit",
 ]);
 
+const successfulTaskStatuses = new Set(["SUCCEEDED", "SUCCEEDED_WITH_WARNINGS"]);
+const failedTaskStatuses = new Set(["FAILED", "TIMED_OUT"]);
+
+type TaskEvent = {
+  taskId?: string;
+  status?: string;
+  appid?: string;
+  deployId?: string;
+  applicationName?: string;
+};
+
+function taskNotification(event: TaskEvent, locale: string) {
+  const name =
+    event.applicationName?.trim() ||
+    event.appid?.trim() ||
+    event.deployId?.trim() ||
+    event.taskId;
+  const succeeded = successfulTaskStatuses.has(event.status || "");
+  const warned = event.status === "SUCCEEDED_WITH_WARNINGS";
+  if (locale === "en-US") {
+    return succeeded
+      ? {
+          title: warned ? "Backup completed with warnings" : "Backup completed",
+          body: `Backup for ${name} completed${warned ? " with warnings" : ""}.`,
+        }
+      : {
+          title: "Backup failed",
+          body: `Backup for ${name} did not complete. Open Task Center for details.`,
+        };
+  }
+  return succeeded
+    ? {
+        title: warned ? "备份完成，但有警告" : "备份完成",
+        body: `应用「${name}」的备份已完成${warned ? "，请在任务中心查看警告。" : "。"}`,
+      }
+    : {
+        title: "备份失败",
+        body: `应用「${name}」的备份未完成，请在任务中心查看详情。`,
+      };
+}
+
 function signIn() {
   window.location.assign(
     `/auth/login?return_to=${encodeURIComponent(`${window.location.pathname}${window.location.search}`)}`,
@@ -56,6 +117,8 @@ function signIn() {
 export function useLiveBackupData() {
   const [state, setState] = useState<LiveState>(initialState);
   const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [initialDataReady, setInitialDataReady] = useState(false);
   const [error, setError] = useState<LiveError>();
   const sessionReady = Boolean(state.session);
   const filters = useRef<Record<PageKey, URLSearchParams>>({
@@ -67,6 +130,19 @@ export function useLiveBackupData() {
     audit: new URLSearchParams([["limit", "15"]]),
   });
   const mounted = useRef(true);
+  const refreshing = useRef(false);
+  const initialDataReadyRef = useRef(false);
+  const eventCursor = useRef<number>();
+  const notifiedTasks = useRef(new Set<string>());
+
+  const finishInitialLoad = useCallback((ready: boolean) => {
+    if (!mounted.current) return;
+    setInitialLoading(false);
+    if (ready && !initialDataReadyRef.current) {
+      initialDataReadyRef.current = true;
+      setInitialDataReady(true);
+    }
+  }, []);
 
   const handleFailure = useCallback((caught: unknown) => {
     if (
@@ -91,36 +167,67 @@ export function useLiveBackupData() {
       const params = new URLSearchParams(override || filters.current[key]);
       if (cursor) params.set("cursor", cursor);
       else params.delete("cursor");
-      const result =
-        key === "applications"
-          ? await api.applications(params)
-          : key === "backups"
-            ? await api.backups(params)
-            : key === "batches"
-              ? await api.batches(params)
-              : key === "tasks"
-                ? await api.tasks(params)
-                : key === "alerts"
-                  ? await api.alerts(params)
-                  : await api.audit(params);
-      if (!mounted.current) return;
-      setState((current) => ({
-        ...current,
-        [key]: {
-          items: result.items || [],
-          nextCursor: result.nextCursor,
-          cursor,
-          history: cursor ? current[key].history : [],
-          limit: Number(params.get("limit") || 15),
-        },
-      }));
+      if (mounted.current)
+        setState((current) => ({
+          ...current,
+          [key]: { ...current[key], loading: true, error: false },
+        }));
+      try {
+        const result =
+          key === "applications"
+            ? await api.applications(params)
+            : key === "backups"
+              ? await api.backups(params)
+              : key === "batches"
+                ? await api.batches(params)
+                : key === "tasks"
+                  ? await api.tasks(params)
+                  : key === "alerts"
+                    ? await api.alerts(params)
+                    : await api.audit(params);
+        if (!mounted.current) return;
+        setState((current) => ({
+          ...current,
+          [key]: {
+            items: result.items || [],
+            nextCursor: result.nextCursor,
+            cursor,
+            history: cursor ? current[key].history : [],
+            limit: Number(params.get("limit") || 15),
+            loaded: true,
+            loading: false,
+            error: false,
+          },
+        }));
+      } catch (caught) {
+        if (mounted.current)
+          setState((current) => ({
+            ...current,
+            [key]: { ...current[key], loading: false, error: true },
+          }));
+        throw caught;
+      }
     },
     [],
   );
 
   const refresh = useCallback(async () => {
+    // Lazycat's route proxy can cancel a burst of concurrent upstream reads.
+    // Serialize refreshes as well as individual resource loads so SSE, the
+    // catalog poller, and a manual retry never recreate that burst.
+    if (refreshing.current) return;
+    refreshing.current = true;
+    if (!initialDataReadyRef.current) setInitialLoading(true);
     setLoading(true);
     setError(undefined);
+    if (mounted.current)
+      setState((current) => {
+        const next = { ...current };
+        paged.forEach((key) => {
+          next[key] = { ...next[key], loading: true, error: false };
+        });
+        return next;
+      });
     try {
       // Resolve the session independently so a slow or cancelled secondary
       // resource cannot keep the whole application on the initial loading
@@ -130,108 +237,124 @@ export function useLiveBackupData() {
       if (!mounted.current) return;
       setState((current) => ({ ...current, session }));
 
-      const results = await Promise.allSettled([
-        api.overview(),
-        api.applications(filters.current.applications),
-        api.plans(),
-        api.tasks(filters.current.tasks),
-        api.batches(filters.current.batches),
-        api.backups(filters.current.backups),
-        api.storage(),
-        api.alerts(filters.current.alerts),
-        api.settings(),
-        api.audit(filters.current.audit),
-      ]);
-      if (!mounted.current) return;
+      const load = async (request: () => Promise<unknown>, commit: (value: any) => void) => {
+        try {
+          const value = await request();
+          if (mounted.current) commit(value);
+        } catch (caught) {
+          handleFailure(caught);
+        }
+      };
 
-      const [
-        overview,
-        applicationPage,
-        plans,
-        taskPage,
-        batchPage,
-        backupPage,
-        storage,
-        alertPage,
-        settings,
-        auditPage,
-      ] = results;
+      // Locale and timezone are global shell state, and the settings page must
+      // not wait for application discovery or every other secondary page.
+      await load(api.settings, (settings) =>
+        setState((current) => ({ ...current, settings })),
+      );
+
+      // Applications are the primary product data. Publish them before
+      // loading secondary pages so a successful catalog response is never
+      // held back by another endpoint or a proxy cancellation.
+      if (mounted.current)
+        setState((current) => ({
+          ...current,
+          applications: { ...current.applications, loading: true, error: false },
+        }));
+      let applicationPage: Awaited<ReturnType<typeof api.applications>>;
+      try {
+        applicationPage = await api.applications(filters.current.applications);
+      } catch (caught) {
+        if (mounted.current)
+          setState((current) => ({
+            ...current,
+            applications: { ...current.applications, loading: false, error: true },
+          }));
+        handleFailure(caught);
+        finishInitialLoad(false);
+        return;
+      } finally {
+        if (mounted.current) setLoading(false);
+      }
+      if (!mounted.current) return;
+      const sync = applicationPage.sync;
       setState((current) => ({
         ...current,
-        sync:
-          applicationPage.status === "fulfilled"
-            ? applicationPage.value.sync
-            : current.sync,
-        overview: overview.status === "fulfilled" ? overview.value : current.overview,
-        plans: plans.status === "fulfilled" ? plans.value.items || [] : current.plans,
-        storage: storage.status === "fulfilled" ? storage.value : current.storage,
-        settings: settings.status === "fulfilled" ? settings.value : current.settings,
-        applications:
-          applicationPage.status === "fulfilled"
-            ? {
-                items: applicationPage.value.items || [],
-                nextCursor: applicationPage.value.nextCursor,
-                history: [],
-                limit: Number(filters.current.applications.get("limit") || 15),
-              }
-            : current.applications,
-        tasks:
-          taskPage.status === "fulfilled"
-            ? {
-                items: taskPage.value.items || [],
-                nextCursor: taskPage.value.nextCursor,
-                history: [],
-                limit: Number(filters.current.tasks.get("limit") || 15),
-              }
-            : current.tasks,
-        batches:
-          batchPage.status === "fulfilled"
-            ? {
-                items: batchPage.value.items || [],
-                nextCursor: batchPage.value.nextCursor,
-                history: [],
-                limit: Number(filters.current.batches.get("limit") || 15),
-              }
-            : current.batches,
-        backups:
-          backupPage.status === "fulfilled"
-            ? {
-                items: backupPage.value.items || [],
-                nextCursor: backupPage.value.nextCursor,
-                history: [],
-                limit: Number(filters.current.backups.get("limit") || 15),
-              }
-            : current.backups,
-        alerts:
-          alertPage.status === "fulfilled"
-            ? {
-                items: alertPage.value.items || [],
-                nextCursor: alertPage.value.nextCursor,
-                history: [],
-                limit: Number(filters.current.alerts.get("limit") || 15),
-              }
-            : current.alerts,
-        audit:
-          auditPage.status === "fulfilled"
-            ? {
-                items: auditPage.value.items || [],
-                nextCursor: auditPage.value.nextCursor,
-                history: [],
-                limit: Number(filters.current.audit.get("limit") || 15),
-              }
-            : current.audit,
+        sync,
+        applications: pageState(
+          applicationPage,
+          Number(filters.current.applications.get("limit") || 15),
+        ),
       }));
 
-      const failed = results.find(
-        (result): result is PromiseRejectedResult => result.status === "rejected",
+      if (sync?.state !== "RUNNING") finishInitialLoad(true);
+
+      // While discovery is running, wait for the catalog poller. Deferring
+      // the rest avoids competing with the platform directory scan and keeps
+      // the browser below the ingress's concurrent-request limit.
+      if (sync?.state === "RUNNING") return;
+
+      await load(api.overview, (overview) =>
+        setState((current) => ({ ...current, overview })),
       );
-      if (failed) handleFailure(failed.reason);
+      await load(api.plans, (plans) =>
+        setState((current) => ({ ...current, plans: plans.items || [] })),
+      );
+      const loadPage = async (
+        key: PageKey,
+        request: () => Promise<{ items?: any[]; nextCursor?: string }>,
+      ) => {
+        if (mounted.current)
+          setState((current) => ({
+            ...current,
+            [key]: { ...current[key], loading: true, error: false },
+          }));
+        try {
+          const value = await request();
+          if (mounted.current)
+            setState((current) => ({
+              ...current,
+              [key]: pageState(
+                value,
+                Number(filters.current[key].get("limit") || 15),
+              ),
+            }));
+        } catch (caught) {
+          if (mounted.current)
+            setState((current) => ({
+              ...current,
+              [key]: { ...current[key], loading: false, error: true },
+            }));
+          handleFailure(caught);
+        }
+      };
+
+      // Prioritize the pages users most often open after a backup. They are
+      // still serialized to avoid overwhelming the route proxy, while the
+      // page-level loading state keeps navigation responsive during the read.
+      await loadPage("tasks", () => api.tasks(filters.current.tasks));
+      await loadPage("backups", () => api.backups(filters.current.backups));
+      await loadPage("alerts", () => api.alerts(filters.current.alerts));
+      await loadPage("batches", () => api.batches(filters.current.batches));
+      await load(api.storage, (storage) =>
+        setState((current) => ({ ...current, storage })),
+      );
+      await loadPage("audit", () => api.audit(filters.current.audit));
     } catch (caught) {
+      if (mounted.current)
+        setState((current) => {
+          const next = { ...current };
+          paged.forEach((key) => {
+            next[key] = { ...next[key], loading: false, error: true };
+          });
+          return next;
+        });
       handleFailure(caught);
+      finishInitialLoad(false);
     } finally {
+      refreshing.current = false;
       if (mounted.current) setLoading(false);
     }
-  }, [handleFailure]);
+  }, [finishInitialLoad, handleFailure]);
 
   useEffect(() => {
     // React StrictMode mounts effects twice in development. Reset the shared
@@ -254,28 +377,75 @@ export function useLiveBackupData() {
   }, [loading, refresh, state.sync?.state]);
 
   useEffect(() => {
-    if (!sessionReady) return;
+    const settings = state.settings;
+    if (!sessionReady || !settings) return;
     let source: EventSource | undefined;
     let reconnect: number | undefined;
     let merge: number | undefined;
     let disposed = false;
-    const update = () => {
+    let streamReady = false;
+    const rememberCursor = (event: Event) => {
+      const id = Number((event as MessageEvent).lastEventId);
+      if (Number.isSafeInteger(id) && id >= 0) eventCursor.current = id;
+    };
+    const update = (event?: Event) => {
+      if (event) rememberCursor(event);
       window.clearTimeout(merge);
       merge = window.setTimeout(() => {
         void refresh();
       }, 1200);
     };
+    const markReady = (event: Event) => {
+      try {
+        const value = JSON.parse((event as MessageEvent<string>).data) as {
+          after?: number;
+        };
+        if (Number.isSafeInteger(value.after) && (value.after || 0) >= 0)
+          eventCursor.current = value.after;
+      } catch {
+        // A malformed readiness marker only disables catch-up suppression for
+        // this connection; it must not break normal REST refreshes.
+      }
+      streamReady = true;
+    };
+    const notifyTask = (event: Event) => {
+      update(event);
+      if (!streamReady) return;
+      let value: TaskEvent;
+      try {
+        value = JSON.parse((event as MessageEvent<string>).data) as TaskEvent;
+      } catch {
+        return;
+      }
+      const status = value.status || "";
+      const succeeded = successfulTaskStatuses.has(status);
+      const failed = failedTaskStatuses.has(status);
+      if (
+        !value.taskId ||
+        (!succeeded && !failed) ||
+        (succeeded && !settings.notifySuccess) ||
+        (failed && !settings.notifyFirstFailure)
+      )
+        return;
+      const key = `${value.taskId}:${status}`;
+      if (notifiedTasks.current.has(key)) return;
+      notifiedTasks.current.add(key);
+      const message = taskNotification(value, settings.locale);
+      sendBrowserNotification({ ...message, tag: `backup-task-${key}` });
+    };
     const connect = () => {
       if (disposed) return;
-      source = new EventSource(api.eventsURL());
+      streamReady = false;
+      source = new EventSource(api.eventsURL(eventCursor.current));
       [
         "batch.updated",
-        "task.updated",
         "snapshot.updated",
         "alert.created",
         "storage.updated",
         "session.expiring",
       ].forEach((name) => source?.addEventListener(name, update));
+      source.addEventListener("stream.ready", markReady);
+      source.addEventListener("task.updated", notifyTask);
       source.onerror = () => {
         source?.close();
         reconnect = window.setTimeout(connect, 15000);
@@ -288,7 +458,13 @@ export function useLiveBackupData() {
       window.clearTimeout(reconnect);
       window.clearTimeout(merge);
     };
-  }, [refresh, sessionReady]);
+  }, [
+    refresh,
+    sessionReady,
+    state.settings?.locale,
+    state.settings?.notifyFirstFailure,
+    state.settings?.notifySuccess,
+  ]);
 
   const setFilter = useCallback(
     async (key: PageKey, entries: Record<string, string | undefined>) => {
@@ -379,6 +555,8 @@ export function useLiveBackupData() {
   return {
     state,
     loading,
+    initialLoading,
+    initialDataReady,
     error,
     refresh,
     setFilter,

@@ -1536,7 +1536,7 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description Current-tenant event stream. REST remains authoritative after reconnect. */
+                /** @description Current-tenant event stream. A new stream without a cursor starts at the current event head and emits `stream.ready`; reconnecting clients pass `after` to receive missed events. REST remains authoritative after reconnect. */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -1572,7 +1572,7 @@ export interface components {
             identityVerified: boolean;
         };
         /** @enum {string} */
-        CapabilityStatus: "BACKUPABLE" | "BACKUPABLE_SHARED_WARNING" | "NO_DATA" | "UNSUPPORTED_DATABASE" | "SOURCE_MAPPING_AMBIGUOUS" | "SOURCE_NOT_READY" | "SOURCE_PERMISSION_DENIED" | "SOURCE_INSTANCE_NOT_FOUND" | "SOURCE_OWNER_MISMATCH" | "RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE" | "PROBE_FAILED";
+        CapabilityStatus: "BACKUPABLE" | "BACKUPABLE_SHARED_WARNING" | "NO_DATA" | "UNSUPPORTED_DATABASE" | "SYSTEM_UNSUPPORTED" | "SOURCE_MAPPING_AMBIGUOUS" | "SOURCE_NOT_READY" | "SOURCE_PERMISSION_DENIED" | "SOURCE_INSTANCE_NOT_FOUND" | "SOURCE_OWNER_MISMATCH" | "RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE" | "PROBE_FAILED";
         DatabaseFinding: {
             type: string;
             /** @description Source-relative path only */
@@ -1643,6 +1643,11 @@ export interface components {
             id: string;
             appid: string;
             applicationName: string;
+            /**
+             * Format: uri
+             * @description Lazycat catalog application icon URL
+             */
+            icon?: string;
             applicationVersion?: string;
             deployId: string;
             multiInstance: boolean;
@@ -1675,6 +1680,11 @@ export interface components {
             jobId: string;
             appid: string;
             applicationName: string;
+            /**
+             * Format: uri
+             * @description Lazycat catalog application icon URL
+             */
+            icon?: string;
             applicationVersion?: string;
             deployId: string;
             multiInstance: boolean;
@@ -1724,6 +1734,15 @@ export interface components {
         };
         PlanTarget: {
             deployId: string;
+            /** @description Application identifier resolved from the current application catalog. */
+            appid?: string;
+            /** @description Display metadata resolved from the current application catalog. */
+            applicationName?: string;
+            /**
+             * Format: uri
+             * @description Lazycat catalog application icon URL
+             */
+            icon?: string;
             /**
              * @deprecated
              * @description Compatibility metadata; it does not gate plan creation.
@@ -1847,6 +1866,11 @@ export interface components {
             backupJobId: string;
             appid: string;
             applicationName: string;
+            /**
+             * Format: uri
+             * @description Lazycat catalog application icon URL
+             */
+            icon?: string;
             deployId: string;
             multiInstance: boolean;
             sharedRiskAccepted: boolean;
@@ -2000,7 +2024,11 @@ export interface components {
             runningTasks: number;
             succeeded24h: number;
             failed24h: number;
+            /** @description Total task records for the current tenant */
+            taskCount: number;
             unreadAlerts: number;
+            /** @description Total alert records for the current tenant */
+            alertCount: number;
             storage: components["schemas"]["StorageSummary"];
             nextPlans: components["schemas"]["BackupPlan"][];
             recentActivity: components["schemas"]["AuditEntry"][];

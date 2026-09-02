@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   Archive,
   ArrowLeft,
   Check,
+  ChevronDown,
   ChevronRight,
   Database,
   FileText,
@@ -13,12 +14,198 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../api/client";
-import { AppMark, bytes, date, ModeBadge, StatusBadge } from "./components";
+import {
+  AppMark,
+  apiErrorLabel,
+  bytes,
+  databaseTypeLabel,
+  date,
+  ModeBadge,
+  scheduleLabel,
+  StatusBadge,
+} from "./components";
 
 const tx = (locale: string, zh: string, en: string) =>
   locale === "zh-CN" ? zh : en;
 const cn = (...names: Array<string | false | undefined>) =>
   names.filter(Boolean).join(" ");
+
+type ScopeTreeNode = {
+  path: string;
+  name: string;
+  type: "directory" | "file";
+  entry?: any;
+  children: ScopeTreeNode[];
+};
+
+function scopeEntriesFromScope(scope: any) {
+  const entries: any[] = [];
+  for (const path of scope?.directories || [])
+    entries.push({ path, type: "directory", size: 0, sqlite: false, selectable: true });
+  for (const path of scope?.files || [])
+    entries.push({
+      path,
+      type: "file",
+      size: 0,
+      sqlite: /\.db$/i.test(path),
+      selectable: true,
+    });
+  return entries;
+}
+
+function buildScopeTree(entries: any[] = []): ScopeTreeNode[] {
+  const root: ScopeTreeNode = {
+    path: "",
+    name: "",
+    type: "directory",
+    children: [],
+  };
+  const byPath = new Map<string, ScopeTreeNode>([["", root]]);
+  for (const entry of entries) {
+    const path = String(entry.path || "").replace(/^\/+|\/+$/g, "");
+    if (!path) continue;
+    const parts = path.split("/").filter(Boolean);
+    let parent = root;
+    let currentPath = "";
+    parts.forEach((part, index) => {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      let node = byPath.get(currentPath);
+      if (!node) {
+        node = {
+          path: currentPath,
+          name: part,
+          type: index === parts.length - 1 ? entry.type : "directory",
+          children: [],
+        };
+        byPath.set(currentPath, node);
+        parent.children.push(node);
+      }
+      if (index === parts.length - 1) {
+        node.type = entry.type;
+        node.entry = entry;
+      }
+      parent = node;
+    });
+  }
+  const sort = (nodes: ScopeTreeNode[]) => {
+    nodes.sort((left, right) => {
+      if (left.type !== right.type) return left.type === "directory" ? -1 : 1;
+      return left.name.localeCompare(right.name, undefined, { numeric: true });
+    });
+    nodes.forEach((node) => sort(node.children));
+  };
+  sort(root.children);
+  return root.children;
+}
+
+function scopeModeLabel(mode: string | undefined, locale: string) {
+  if (mode === "CUSTOM") return tx(locale, "自定义备份范围", "Custom backup scope");
+  if (mode === "CORE") return tx(locale, "核心数据（历史）", "Core data (legacy)");
+  return tx(locale, "全量备份", "Full backup");
+}
+
+function ScopeTree({
+  entries,
+  scope,
+  locale,
+  onToggle,
+  readOnly = false,
+  collapseDirectoriesWhenOver,
+}: {
+  entries: any[];
+  scope?: any;
+  locale: string;
+  onToggle?: (entry: any) => void;
+  readOnly?: boolean;
+  collapseDirectoriesWhenOver?: number;
+}) {
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const tree = buildScopeTree(entries);
+  const directoryCount = countDirectories(tree);
+  const collapseMany =
+    collapseDirectoriesWhenOver !== undefined &&
+    directoryCount > collapseDirectoriesWhenOver;
+  const directories = scope?.directories || [];
+  const files = scope?.files || [];
+  const selected = (node: ScopeTreeNode) => {
+    if (node.type === "directory")
+      return directories.includes(node.path) || directories.some((root: string) => node.path.startsWith(`${root}/`));
+    return files.includes(node.path) || directories.some((root: string) => node.path.startsWith(`${root}/`));
+  };
+  const inherited = (node: ScopeTreeNode) =>
+    directories.some((root: string) => node.path.startsWith(`${root}/`));
+  const render = (nodes: ScopeTreeNode[], depth = 0): ReactNode[] =>
+    nodes.flatMap((node) => {
+      const hasChildren = node.children.length > 0;
+      const open = expanded[node.path] ?? !collapseMany;
+      const entry = node.entry || {
+        path: node.path,
+        type: node.type,
+        size: 0,
+        sqlite: node.type === "file" && /\.db$/i.test(node.path),
+        selectable: false,
+      };
+      const rows: ReactNode[] = [
+        <div
+          className={cn("tree-row", !entry.selectable && "tree-skip")}
+          key={node.path}
+          style={{ paddingLeft: 11 + depth * 18 }}
+        >
+          {hasChildren ? (
+            <button
+              type="button"
+              className="tree-toggle"
+              aria-label={open ? tx(locale, "收起目录", "Collapse directory") : tx(locale, "展开目录", "Expand directory")}
+              onClick={() => setExpanded((current) => ({ ...current, [node.path]: !open }))}
+            >
+              <ChevronDown size={14} className={open ? "" : "tree-toggle-closed"} />
+            </button>
+          ) : (
+            <span className="tree-toggle-spacer" />
+          )}
+          {!readOnly && (
+            <input
+              type="checkbox"
+              disabled={!entry.selectable || inherited(node)}
+              checked={selected(node)}
+              aria-label={node.path}
+              onChange={() => onToggle?.(entry)}
+            />
+          )}
+          {node.type === "directory" ? (
+            <Folder className="tree-icon" />
+          ) : entry.sqlite || /\.db$/i.test(node.path) ? (
+            <Database className="tree-icon" />
+          ) : (
+            <FileText className="tree-icon" />
+          )}
+          <span className="mono">{node.name}</span>
+          <span className="tree-size">
+            {entry.selectable
+              ? node.type === "directory"
+                ? tx(locale, "目录", "Directory")
+                : entry.size
+                  ? bytes(entry.size, locale)
+                  : tx(locale, "文件", "File")
+              : tx(locale, "不可选择", "Not selectable")}
+          </span>
+        </div>,
+      ];
+      if (hasChildren && open) rows.push(...render(node.children, depth + 1));
+      return rows;
+    });
+  return <div className="tree">{tree.length ? render(tree) : <div className="empty">{tx(locale, "目录为空", "Directory is empty")}</div>}</div>;
+}
+
+function countDirectories(nodes: ScopeTreeNode[]): number {
+  return nodes.reduce(
+    (count, node) =>
+      count +
+      (node.type === "directory" ? 1 : 0) +
+      countDirectories(node.children),
+    0,
+  );
+}
 
 export function Dialog({
   kind,
@@ -30,9 +217,12 @@ export function Dialog({
   run,
   scope,
   applications,
+  navigate,
+  setFilter,
   open,
   back,
   canBack,
+  notify,
 }: any) {
   const plan = kind === "plan" && data?.id ? data : undefined;
   const title =
@@ -46,6 +236,8 @@ export function Dialog({
             : tx(locale, "新建备份计划", "New backup plan")
           : kind === "plan-detail"
             ? tx(locale, "计划详情", "Plan details")
+            : kind === "confirm"
+              ? data?.title || tx(locale, "确认操作", "Confirm action")
             : kind === "task"
               ? tx(locale, "任务详情", "Task details")
               : kind === "batch"
@@ -99,15 +291,29 @@ export function Dialog({
               timezone={timezone}
               plans={state.plans}
               open={open}
+              run={run}
+              navigate={navigate}
+              setFilter={setFilter}
+              close={close}
             />
           )}
           {kind === "backup" && (
             <BackupConfirm app={data} locale={locale} close={close} run={run} />
           )}
+          {kind === "confirm" && (
+            <ConfirmAction
+              data={data}
+              locale={locale}
+              close={close}
+              run={run}
+              notify={notify}
+            />
+          )}
           {kind === "plan" && (
             <PlanWizard
               initial={plan}
               initialDeployIds={data?.initialDeployIds}
+              fixedDeployId={data?.fixedDeployId}
               apps={state.applications.items}
               settings={state.settings}
               locale={locale}
@@ -124,11 +330,13 @@ export function Dialog({
               apps={state.applications.items}
               locale={locale}
               timezone={timezone}
+              scope={scope}
             />
           )}
           {kind === "task" && (
             <TaskDetails
               task={data}
+              apps={state.applications.items}
               locale={locale}
               timezone={timezone}
               open={open}
@@ -137,6 +345,7 @@ export function Dialog({
           {kind === "batch" && (
             <BatchDetails
               batch={data}
+              apps={state.applications.items}
               locale={locale}
               timezone={timezone}
               open={open}
@@ -168,7 +377,52 @@ function Detail({ label, value, mono = false }: any) {
   );
 }
 
-function AppDetails({ app, locale, timezone, plans, open }: any) {
+function ConfirmAction({ data, locale, close, run, notify }: any) {
+  const [busy, setBusy] = useState(false);
+  const confirm = async () => {
+    if (busy || typeof data?.operation !== "function") return;
+    setBusy(true);
+    try {
+      const completed = await run(data.operation);
+      if (completed) {
+        (data.notify || notify)?.(data.success);
+        close();
+      } else {
+        (data.notify || notify)?.(data.failure);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div>
+      <div className="callout callout-warning">
+        <strong>{data?.title}</strong>
+        <p style={{ margin: "8px 0 0" }}>{data?.description}</p>
+      </div>
+      <div className="modal-foot" style={{ margin: "20px -20px -20px" }}>
+        <button className="button button-secondary" onClick={close} disabled={busy}>
+          {tx(locale, "取消", "Cancel")}
+        </button>
+        <button className="button button-primary" onClick={confirm} disabled={busy}>
+          {data?.confirmLabel || tx(locale, "确认", "Confirm")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AppDetails({
+  app,
+  locale,
+  timezone,
+  plans,
+  open,
+  run,
+  navigate,
+  setFilter,
+  close,
+}: any) {
   const related = plans.filter((plan: any) =>
     plan.targets?.some((target: any) => target.deployId === app.deployId),
   );
@@ -225,7 +479,15 @@ function AppDetails({ app, locale, timezone, plans, open }: any) {
         />
         <Detail
           label={tx(locale, "数据概览", "Data overview")}
-          value={`${bytes(app.totalBytes, locale)} · ${app.fileCount} ${tx(locale, "文件", "files")} · ${app.sqliteCount} SQLite`}
+          value={
+            <span className="cell-stack">
+              <span>
+                {bytes(app.totalBytes, locale)} · {app.fileCount}{" "}
+                {tx(locale, "文件", "files")}
+              </span>
+              {app.sqliteCount > 0 && <span>{app.sqliteCount} SQLite 3</span>}
+            </span>
+          }
         />
         <Detail
           label={tx(locale, "保护状态", "Protection")}
@@ -251,7 +513,7 @@ function AppDetails({ app, locale, timezone, plans, open }: any) {
               <Database className="tree-icon" />
               <span className="mono">{finding.path}</span>
               <span className="tree-size">
-                {finding.type}
+                {databaseTypeLabel(finding.type, locale)}
                 {finding.supported
                   ? ""
                   : ` · ${finding.reason || tx(locale, "不支持", "unsupported")}`}
@@ -262,6 +524,19 @@ function AppDetails({ app, locale, timezone, plans, open }: any) {
       ) : (
         <div className="empty">
           {tx(locale, "没有数据库检测结果", "No database findings")}
+        </div>
+      )}
+      {app.databaseFindings?.some(
+        (finding: any) =>
+          !finding.supported &&
+          String(finding.type || "").toLowerCase() === "unknown",
+      ) && (
+        <div className="callout callout-warning" style={{ marginTop: 10 }}>
+          {tx(
+            locale,
+            "SQLite 3 只统计能识别到 SQLite 格式头的文件；标记为“未知数据库”的文件通常只是使用了 .db 等数据库后缀，但内容不是受支持的 SQLite，因此会阻止该实例备份。",
+            "SQLite 3 counts only files with a valid SQLite header. An “unknown database” entry usually has a database-like suffix such as .db but is not supported SQLite, so this instance cannot be backed up.",
+          )}
         </div>
       )}
       <div className="section-heading">
@@ -295,7 +570,12 @@ function AppDetails({ app, locale, timezone, plans, open }: any) {
       >
         <button
           className="button button-secondary"
-          onClick={() => open("plan", { initialDeployIds: [app.deployId] })}
+          onClick={() =>
+            open("plan", {
+              initialDeployIds: [app.deployId],
+              fixedDeployId: app.deployId,
+            })
+          }
           disabled={
             !["BACKUPABLE", "BACKUPABLE_SHARED_WARNING"].includes(
               app.capabilityStatus,
@@ -304,6 +584,53 @@ function AppDetails({ app, locale, timezone, plans, open }: any) {
         >
           <SlidersHorizontal />
           {tx(locale, "创建计划", "Create plan")}
+        </button>
+        <button
+          className="button button-secondary"
+          onClick={() => {
+            void setFilter("tasks", {
+              deploy_id: app.deployId,
+              status: undefined,
+              batch_id: undefined,
+            });
+            close();
+            navigate("tasks", `?deploy_id=${encodeURIComponent(app.deployId)}`);
+          }}
+        >
+          <ListChecks />
+          {tx(locale, "查看任务", "View tasks")}
+        </button>
+        <button
+          className="button button-secondary"
+          disabled={!app.lastBackupAt}
+          onClick={async () => {
+            if (!app.lastBackupAt) return;
+            let cursor: string | undefined;
+            let snapshot: any;
+            const completed = await run(async () => {
+              do {
+                const params = new URLSearchParams([["limit", "200"]]);
+                if (cursor) params.set("cursor", cursor);
+                const result = await api.backups(params);
+                snapshot = result.items.find(
+                  (item: any) => item.deployId === app.deployId,
+                );
+                cursor = result.nextCursor;
+              } while (!snapshot && cursor);
+            });
+            if (completed && snapshot) open("snapshot", snapshot);
+            if (completed && !snapshot)
+              window.alert(
+                tx(
+                  locale,
+                  "该实例还没有可查看的已完成快照。",
+                  "This instance does not have a completed snapshot to view.",
+                ),
+              );
+          }}
+        >
+          <Archive />
+          {tx(locale, "查看快照", "View snapshots")}
         </button>
       </div>
     </div>
@@ -360,7 +687,7 @@ function BackupConfirm({ app, locale, close, run }: any) {
           onClick={start}
         >
           <Archive />
-          {tx(locale, "立即入队", "Queue now")}
+          {tx(locale, "立即备份", "Back up now")}
         </button>
       </div>
     </div>
@@ -370,6 +697,7 @@ function BackupConfirm({ app, locale, close, run }: any) {
 function PlanWizard({
   initial,
   initialDeployIds,
+  fixedDeployId,
   apps,
   settings,
   locale,
@@ -439,8 +767,12 @@ function PlanWizard({
       ]),
     ).values(),
   );
-  const eligible = candidates.filter((app: any) =>
-    ["BACKUPABLE", "BACKUPABLE_SHARED_WARNING"].includes(app.capabilityStatus),
+  const eligible = candidates.filter(
+    (app: any) =>
+      ["BACKUPABLE", "BACKUPABLE_SHARED_WARNING"].includes(
+        app.capabilityStatus,
+      ) &&
+      (!fixedDeployId || app.deployId === fixedDeployId),
   );
   const selectedApps = selected
     .map((deployId) => eligible.find((app: any) => app.deployId === deployId))
@@ -450,11 +782,13 @@ function PlanWizard({
     /^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(cronExpression.trim());
 
   const toggleTarget = (deployId: string) =>
-    setSelected((current) =>
-      current.includes(deployId)
-        ? current.filter((item) => item !== deployId)
-        : [...current, deployId],
-    );
+    fixedDeployId
+      ? undefined
+      : setSelected((current) =>
+          current.includes(deployId)
+            ? current.filter((item) => item !== deployId)
+            : [...current, deployId],
+        );
   const scopeFor = (deployId: string) =>
     targetScopes[deployId] || { mode, directories: [], files: [], revision: 1 };
   const loadCandidates = async (cursor?: string) => {
@@ -469,7 +803,13 @@ function PlanWizard({
   };
   const loadCatalog = async (deployId: string, cursor?: string) => {
     const result = await scope(deployId, queries[deployId] || "", cursor);
-    setCatalogs((current) => ({ ...current, [deployId]: result }));
+    setCatalogs((current) => {
+      const previous = cursor ? current[deployId] : undefined;
+      const items = previous
+        ? [...(previous.items || []), ...(result.items || [])]
+        : result.items || [];
+      return { ...current, [deployId]: { ...result, items } };
+    });
   };
   useEffect(() => {
     let active = true;
@@ -542,14 +882,51 @@ function PlanWizard({
         files: [],
         revision: 1,
       };
-      const field = entry.type === "directory" ? "directories" : "files";
-      const values = currentScope[field] || [];
+      const catalogItems = catalogs[deployId]?.items || [];
+      const descendants = catalogItems.filter(
+        (item: any) =>
+          item.selectable &&
+          (item.path === entry.path ||
+            item.path.startsWith(`${entry.path}/`)),
+      );
+      const selectedPaths = new Set([
+        ...(currentScope.directories || []),
+        ...(currentScope.files || []),
+      ]);
+      const alreadySelected = selectedPaths.has(entry.path);
+      if (entry.type === "directory") {
+        const directoryPaths = descendants
+          .filter((item: any) => item.type === "directory")
+          .map((item: any) => item.path);
+        const filePaths = descendants
+          .filter((item: any) => item.type !== "directory")
+          .map((item: any) => item.path);
+        const nextDirectories = new Set(currentScope.directories || []);
+        const nextFiles = new Set(currentScope.files || []);
+        [...directoryPaths, entry.path].forEach((path) =>
+          alreadySelected ? nextDirectories.delete(path) : nextDirectories.add(path),
+        );
+        filePaths.forEach((path) =>
+          alreadySelected ? nextFiles.delete(path) : nextFiles.add(path),
+        );
+        return {
+          ...current,
+          [deployId]: {
+            ...currentScope,
+            mode: "CUSTOM",
+            directories: [...nextDirectories],
+            files: [...nextFiles],
+            revision: Math.max(1, Number(currentScope.revision || 0) + 1),
+          },
+        };
+      }
+      const values = currentScope.files || [];
       return {
         ...current,
         [deployId]: {
           ...currentScope,
           mode: "CUSTOM",
-          [field]: values.includes(entry.path)
+          files: values.includes(entry.path)
             ? values.filter((item: string) => item !== entry.path)
             : [...values, entry.path],
           revision: Math.max(1, Number(currentScope.revision || 0) + 1),
@@ -562,13 +939,15 @@ function PlanWizard({
       const input = {
         name,
         targetKind: "EXPLICIT",
-        targets: selected.map((deployId) => ({
+        targets: selected
+          .filter((deployId) => !fixedDeployId || deployId === fixedDeployId)
+          .map((deployId) => ({
           deployId,
           scope:
             scopeFor(deployId).mode === "CUSTOM"
               ? scopeFor(deployId)
               : { mode: "FULL", revision: 1 },
-        })),
+          })),
         scheduleType,
         executionTime,
         cronExpression: scheduleType === "CRON" ? cronExpression : "",
@@ -703,19 +1082,25 @@ function PlanWizard({
               <p>
                 {tx(
                   locale,
-                  "只接受当前可备份的显式实例，不包含未来新出现的应用。",
-                  "Only explicitly selected, currently backupable instances are included.",
+                  fixedDeployId
+                    ? "当前应用创建计划时，只能使用这个应用实例。"
+                    : "只接受当前可备份的显式实例，不包含未来新出现的应用。",
+                  fixedDeployId
+                    ? "Plans opened from an application are limited to that instance."
+                    : "Only explicitly selected, currently backupable instances are included.",
                 )}
               </p>
             </div>
-            <div className="search-field" style={{ maxWidth: 230 }}>
-              <Search />
-              <input
-                value={targetSearch}
-                onChange={(event) => setTargetSearch(event.target.value)}
-                placeholder={tx(locale, "搜索应用", "Search applications")}
-              />
-            </div>
+            {!fixedDeployId && (
+              <div className="search-field" style={{ maxWidth: 230 }}>
+                <Search />
+                <input
+                  value={targetSearch}
+                  onChange={(event) => setTargetSearch(event.target.value)}
+                  placeholder={tx(locale, "搜索应用", "Search applications")}
+                />
+              </div>
+            )}
           </div>
           <div
             className="list"
@@ -742,6 +1127,7 @@ function PlanWizard({
                   <input
                     type="checkbox"
                     checked={selected.includes(app.deployId)}
+                    disabled={Boolean(fixedDeployId)}
                     onChange={() => toggleTarget(app.deployId)}
                   />
                   <AppMark app={app} name={app.name} />
@@ -874,52 +1260,25 @@ function PlanWizard({
                         {tx(locale, "查询", "Search")}
                       </button>
                     </div>
-                    <div className="tree">
-                      {catalog?.items?.map((entry: any) => {
-                        const selectedPaths =
-                          entry.type === "directory"
-                            ? current.directories
-                            : current.files;
-                        return (
-                          <label
-                            className={`tree-row ${entry.selectable ? "" : "tree-skip"}`}
-                            key={`${entry.type}-${entry.path}`}
-                          >
-                            <input
-                              type="checkbox"
-                              disabled={!entry.selectable}
-                              checked={(selectedPaths || []).includes(
-                                entry.path,
-                              )}
-                              onChange={() => toggleEntry(app.deployId, entry)}
-                            />
-                            {entry.type === "directory" ? (
-                              <Folder className="tree-icon" />
-                            ) : (
-                              <FileText className="tree-icon" />
-                            )}
-                            <span className="mono">{entry.path}</span>
-                            <span className="tree-size">
-                              {entry.selectable
-                                ? entry.type === "directory"
-                                  ? tx(locale, "目录", "Directory")
-                                  : bytes(entry.size, locale)
-                                : tx(locale, "不可选择", "Not selectable")}
-                            </span>
-                          </label>
-                        );
-                      })}
-                      {catalog?.nextCursor && (
-                        <button
-                          className="button button-quiet"
-                          onClick={() =>
-                            void loadCatalog(app.deployId, catalog.nextCursor)
-                          }
-                        >
-                          {tx(locale, "下一页", "Next page")}
-                        </button>
-                      )}
-                      {!catalog && (
+                    {catalog ? (
+                      <ScopeTree
+                        entries={catalog.items || []}
+                        scope={current}
+                        locale={locale}
+                        onToggle={(entry) => toggleEntry(app.deployId, entry)}
+                      />
+                    ) : null}
+                    {catalog?.nextCursor && (
+                      <button
+                        className="button button-quiet"
+                        onClick={() =>
+                          void loadCatalog(app.deployId, catalog.nextCursor)
+                        }
+                      >
+                        {tx(locale, "下一页", "Next page")}
+                      </button>
+                    )}
+                    {!catalog && (
                         <div className="empty">
                           {tx(
                             locale,
@@ -928,7 +1287,6 @@ function PlanWizard({
                           )}
                         </div>
                       )}
-                    </div>
                   </>
                 )}
               </div>
@@ -1165,8 +1523,35 @@ function SettingToggle({ checked, onChange, title, description }: any) {
   );
 }
 
-function PlanDetails({ plan, apps, locale, timezone }: any) {
+function PlanDetails({ plan, apps, locale, timezone, scope }: any) {
   const targets = plan.targets || [];
+  const [catalogs, setCatalogs] = useState<Record<string, any[]>>({});
+  useEffect(() => {
+    if (!scope) return;
+    let active = true;
+    targets
+      .forEach((target: any) => {
+        void (async () => {
+          try {
+            let cursor: string | undefined;
+            const items: any[] = [];
+            do {
+              const page = await scope(target.deployId, "", cursor);
+              items.push(...(page.items || []));
+              cursor = page.nextCursor;
+            } while (cursor);
+            if (active)
+              setCatalogs((current) => ({ ...current, [target.deployId]: items }));
+          } catch {
+            // The persisted scope remains available when the live catalog is
+            // temporarily unavailable or the selected path was removed.
+          }
+        })();
+      });
+    return () => {
+      active = false;
+    };
+  }, [scope, targets]);
   return (
     <div>
       <div className="detail-grid">
@@ -1182,7 +1567,12 @@ function PlanDetails({ plan, apps, locale, timezone }: any) {
         />
         <Detail
           label={tx(locale, "执行频率", "Schedule")}
-          value={`${plan.scheduleType} · ${plan.executionTime || plan.cronExpression || "—"}`}
+          value={scheduleLabel(
+            plan.scheduleType,
+            plan.executionTime,
+            plan.cronExpression,
+            locale,
+          )}
           mono
         />
         <Detail
@@ -1226,14 +1616,64 @@ function PlanDetails({ plan, apps, locale, timezone }: any) {
           const app = apps.find(
             (item: any) => item.deployId === target.deployId,
           );
+          const targetApp = app || target;
+          const appName =
+            app?.name || target.applicationName || target.deployId;
+          const scope = target.scope || { mode: "FULL", revision: 1 };
+          const catalogItems = catalogs[target.deployId] || [];
+          const selectedEntries =
+            scope.mode === "FULL"
+              ? catalogItems
+              : catalogItems.length
+                ? catalogItems.filter(
+                    (entry: any) =>
+                      (scope.directories || []).some(
+                        (root: string) =>
+                          entry.path === root || entry.path.startsWith(`${root}/`),
+                      ) || (scope.files || []).includes(entry.path),
+                  )
+                : scopeEntriesFromScope(scope);
           return (
-            <div className="list-row" key={target.deployId}>
-              <AppMark app={app} name={app?.name || target.deployId} />
-              <div className="list-main">
-                <div className="list-title">{app?.name || target.deployId}</div>
-                <div className="list-meta mono">
-                  {target.deployId} · {target.scope?.mode || "FULL"}
+            <div key={target.deployId} style={{ marginBottom: 14 }}>
+              <div className="list-row" style={{ padding: "10px 0" }}>
+                <AppMark app={targetApp} name={appName} />
+                <div className="list-main">
+                  <div className="list-title">{appName}</div>
+                  <div className="list-meta mono">{target.deployId}</div>
                 </div>
+                <span className="db-badge db-plain">
+                  {scopeModeLabel(scope.mode, locale)}
+                </span>
+              </div>
+              <div className="plan-target-scope">
+                {scope.mode === "FULL" &&
+                !Object.prototype.hasOwnProperty.call(catalogs, target.deployId) ? (
+                  <div className="empty">
+                    {tx(locale, "正在读取安全目录…", "Loading safe directory…")}
+                  </div>
+                ) : scope.mode === "FULL" || scope.mode === "CUSTOM" ? (
+                  <ScopeTree
+                    entries={selectedEntries}
+                    scope={scope}
+                    locale={locale}
+                    readOnly
+                    collapseDirectoriesWhenOver={5}
+                  />
+                ) : (
+                  <div className="tree">
+                    <div className="tree-row">
+                      <span className="tree-toggle-spacer" />
+                      <Database className="tree-icon" />
+                      <span className="mono">
+                        {tx(
+                          locale,
+                          "历史核心 SQLite 数据",
+                          "Legacy core SQLite data",
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -1243,14 +1683,27 @@ function PlanDetails({ plan, apps, locale, timezone }: any) {
   );
 }
 
-function TaskDetails({ task, locale, timezone, open }: any) {
+function TaskDetails({ task, apps = [], locale, timezone, open }: any) {
   const [detail, setDetail] = useState<any>();
   useEffect(() => {
     void api.task(task.id).then(setDetail);
   }, [task.id]);
   const item = detail?.task || task;
+  const app = apps.find((candidate: any) => candidate.deployId === item.deployId) || item;
   return (
     <div>
+      <div className="app-cell" style={{ marginBottom: 16 }}>
+        <AppMark
+          app={app}
+          name={item.applicationName || item.appid || item.deployId}
+        />
+        <div>
+          <div className="page-title" style={{ fontSize: 18 }}>
+            {item.applicationName || item.appid || item.deployId}
+          </div>
+          <div className="list-meta mono">{item.deployId}</div>
+        </div>
+      </div>
       <div className="detail-grid">
         <Detail
           label={tx(locale, "任务状态", "Task status")}
@@ -1284,8 +1737,9 @@ function TaskDetails({ task, locale, timezone, open }: any) {
         />
         <Detail
           label={tx(locale, "错误", "Error")}
-          value={item.errorCode || "—"}
-          mono
+          value={
+            item.errorCode ? apiErrorLabel(item.errorCode, locale) : "—"
+          }
         />
       </div>
       <div className="section-heading">
@@ -1339,7 +1793,7 @@ function TaskDetails({ task, locale, timezone, open }: any) {
   );
 }
 
-function BatchDetails({ batch, locale, timezone, open }: any) {
+function BatchDetails({ batch, apps = [], locale, timezone, open }: any) {
   const [tasks, setTasks] = useState<any[]>([]);
   useEffect(() => {
     const params = new URLSearchParams([
@@ -1374,8 +1828,8 @@ function BatchDetails({ batch, locale, timezone, open }: any) {
           value={`${batch.succeeded} / ${batch.failed}`}
         />
         <Detail
-          label={tx(locale, "执行中 / 排队", "Running / queued")}
-          value={`${batch.running} / ${batch.queued}`}
+          label={tx(locale, "执行中", "Running")}
+          value={batch.running}
         />
       </div>
       <div className="section-heading">
@@ -1395,8 +1849,14 @@ function BatchDetails({ batch, locale, timezone, open }: any) {
               width: "100%",
             }}
           >
+            <AppMark
+              app={apps.find((candidate: any) => candidate.deployId === task.deployId) || task}
+              name={task.applicationName || task.appid || task.deployId}
+            />
             <div className="list-main">
-              <div className="list-title">{task.applicationName}</div>
+              <div className="list-title">
+                {task.applicationName || task.appid || task.deployId}
+              </div>
               <div className="list-meta mono">
                 {task.deployId} · {task.id}
               </div>
@@ -1420,10 +1880,13 @@ function SnapshotDetails({ snapshot, locale, timezone, open }: any) {
   return (
     <div>
       <div className="app-cell" style={{ marginBottom: 16 }}>
-        <AppMark name={snapshot.applicationName} />
+        <AppMark
+          app={snapshot}
+          name={snapshot.applicationName || snapshot.appid || snapshot.deployId}
+        />
         <div>
           <div className="page-title" style={{ fontSize: 18 }}>
-            {snapshot.applicationName}
+            {snapshot.applicationName || snapshot.appid || snapshot.deployId}
           </div>
           <div className="list-meta mono">
             {snapshot.appid} · {snapshot.applicationVersion || "—"}

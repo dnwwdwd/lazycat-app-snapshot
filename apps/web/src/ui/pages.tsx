@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import {
   Archive,
   Bell,
@@ -28,17 +34,27 @@ import {
 import { api } from "../api/client";
 import {
   AppMark,
+  apiErrorLabel,
   bytes,
+  databaseTypeLabel,
   date,
   Empty,
+  Loading,
   ModeBadge,
   PageHeader,
   Pager,
   Panel,
   SearchField,
+  scheduleLabel,
   StatusBadge,
   TableIconButton,
+  toastMessage,
 } from "./components";
+import {
+  browserNotificationPermission,
+  requestBrowserNotificationPermission,
+  type BrowserNotificationPermission,
+} from "./notifications";
 
 const text = (locale: string, zh: string, en: string) =>
   locale === "zh-CN" ? zh : en;
@@ -50,6 +66,8 @@ const appTone = (id = "") =>
   ];
 const capable = (value: any) =>
   ["BACKUPABLE", "BACKUPABLE_SHARED_WARNING"].includes(value?.capabilityStatus);
+const pagePending = (page: any) =>
+  Boolean(page?.loading || (!page?.loaded && !page?.error));
 
 export function OverviewPage({ state, locale, timezone, navigate }: any) {
   const overview = state.overview || {};
@@ -60,6 +78,45 @@ export function OverviewPage({ state, locale, timezone, navigate }: any) {
     ? Math.min(100, (Number(storage.archiveBytes || 0) / total) * 100)
     : 0;
   const activity = overview.recentActivity || state.audit.items || [];
+  const applicationCount = Math.max(0, Number(overview.applicationCount) || 0);
+  const protectionCounts = [
+    {
+      key: "protected",
+      label: text(locale, "已保护", "Protected"),
+      count: Math.max(0, Number(overview.protectedCount) || 0),
+      tone: "good",
+    },
+    {
+      key: "unprotected",
+      label: text(locale, "待首次备份", "First backup pending"),
+      count: Math.max(0, Number(overview.unprotectedCount) || 0),
+      tone: "navy",
+    },
+    {
+      key: "unsupported",
+      label: text(locale, "数据库不支持", "Unsupported database"),
+      count: Math.max(0, Number(overview.unsupportedCount) || 0),
+      tone: "danger",
+    },
+    {
+      key: "no-data",
+      label: text(locale, "无应用数据", "No application data"),
+      count: Math.max(0, Number(overview.noDataCount) || 0),
+      tone: "faint",
+    },
+  ];
+  const categorizedCount = protectionCounts.reduce(
+    (sum, segment) => sum + segment.count,
+    0,
+  );
+  if (applicationCount > categorizedCount) {
+    protectionCounts.push({
+      key: "other",
+      label: text(locale, "其他状态", "Other status"),
+      count: applicationCount - categorizedCount,
+      tone: "amber",
+    });
+  }
   return (
     <div className="page">
       <PageHeader
@@ -123,11 +180,11 @@ export function OverviewPage({ state, locale, timezone, navigate }: any) {
           note={text(locale, "成功 / 失败", "Succeeded / failed")}
         />
         <Kpi
-          label={text(locale, "队列 / 执行中", "Queued / running")}
-          value={`${overview.queuedTasks ?? 0} / ${overview.runningTasks ?? 0}`}
+          label={text(locale, "运行中任务", "Running tasks")}
+          value={overview.runningTasks ?? 0}
           icon={<ListChecks />}
           tone="navy"
-          note={text(locale, "当前任务", "Current tasks")}
+          note={text(locale, "当前服务端执行", "Currently executing on server")}
         />
         <Kpi
           label={text(locale, "归档占用", "Archive storage")}
@@ -152,38 +209,11 @@ export function OverviewPage({ state, locale, timezone, navigate }: any) {
             }
           >
             <div className="donut-layout">
-              <div className="donut">
-                <div className="donut-center">
-                  <div className="donut-number">
-                    {overview.applicationCount ?? 0}
-                  </div>
-                  <div className="tiny faint">
-                    {text(locale, "应用实例", "instances")}
-                  </div>
-                </div>
-              </div>
-              <div className="legend">
-                <Legend
-                  label={text(locale, "已保护", "Protected")}
-                  count={overview.protectedCount}
-                  tone="good"
-                />
-                <Legend
-                  label={text(locale, "待首次备份", "First backup pending")}
-                  count={overview.unprotectedCount}
-                  tone="navy"
-                />
-                <Legend
-                  label={text(locale, "数据库不支持", "Unsupported database")}
-                  count={overview.unsupportedCount}
-                  tone="danger"
-                />
-                <Legend
-                  label={text(locale, "无应用数据", "No application data")}
-                  count={overview.noDataCount}
-                  tone="faint"
-                />
-              </div>
+              <ProtectionDonut
+                total={applicationCount}
+                segments={protectionCounts}
+                locale={locale}
+              />
             </div>
           </Panel>
           <Panel
@@ -244,7 +274,12 @@ export function OverviewPage({ state, locale, timezone, navigate }: any) {
                   <div className="list-main">
                     <div className="list-title">{plan.name}</div>
                     <div className="list-meta mono">
-                      {plan.scheduleType} · {plan.targets?.length || 0} ·{" "}
+                      {scheduleLabel(
+                        plan.scheduleType,
+                        plan.executionTime,
+                        plan.cronExpression,
+                        locale,
+                      )} · {plan.targets?.length || 0} ·{" "}
                       {plan.timezone}
                     </div>
                   </div>
@@ -331,16 +366,157 @@ function Kpi({ label, value, icon, tone, note }: any) {
     </div>
   );
 }
-function Legend({ label, count, tone }: any) {
+
+type ProtectionSegment = {
+  key: string;
+  label: string;
+  count: number;
+  tone: string;
+};
+
+function ProtectionDonut({
+  total,
+  segments,
+  locale,
+}: {
+  total: number;
+  segments: ProtectionSegment[];
+  locale: string;
+}) {
+  const [hoveredKey, setHoveredKey] = useState<string>();
+  const [selectedKey, setSelectedKey] = useState<string>();
+  const visible = segments.filter((segment) => segment.count > 0);
+  const chartTotal = visible.reduce((sum, segment) => sum + segment.count, 0);
+  const paths = useMemo(() => {
+    if (!chartTotal) return [];
+    let offset = 0;
+    return visible.map((segment) => {
+      const fraction = segment.count / chartTotal;
+      const start = offset;
+      const end = offset + fraction;
+      offset = end;
+      return {
+        ...segment,
+        start,
+        end,
+        path: donutSegmentPath(start, end),
+      };
+    });
+  }, [chartTotal, visible]);
+  const activeKey = hoveredKey || selectedKey;
+  const active = segments.find((segment) => segment.key === activeKey);
+  const chartLabel = active
+    ? `${active.label} · ${active.count}`
+    : `${text(locale, "全部应用实例", "All application instances")} · ${total}`;
+  const select = (key: string) => setSelectedKey((current) => (current === key ? undefined : key));
+  const handleKeyDown = (
+    event: ReactKeyboardEvent<SVGPathElement>,
+    key: string,
+  ) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      select(key);
+    }
+  };
   return (
-    <div className="legend-row">
-      <span className="legend-name">
-        <span className="legend-dot" style={{ background: `var(--${tone})` }} />
-        {label}
-      </span>
-      <strong>{count ?? 0}</strong>
-    </div>
+    <>
+      <div className="donut-chart-wrap">
+        <svg
+          className="donut-svg"
+          viewBox="0 0 160 160"
+          role="group"
+          aria-label={text(locale, "保护状态分布图", "Protection status distribution")}
+        >
+          <title>{chartLabel}</title>
+          <circle className="donut-track" cx="80" cy="80" r="62" />
+          {paths.map((segment) => {
+            const activeSegment = activeKey === segment.key;
+            return (
+              <path
+                key={segment.key}
+                d={segment.path}
+                fill={`var(--${segment.tone})`}
+                className={`donut-segment ${activeSegment ? "active" : ""}`}
+                tabIndex={0}
+                role="button"
+                aria-label={`${segment.label}: ${segment.count}`}
+                aria-pressed={selectedKey === segment.key}
+                onMouseEnter={() => setHoveredKey(segment.key)}
+                onMouseLeave={() => setHoveredKey(undefined)}
+                onFocus={() => setHoveredKey(segment.key)}
+                onBlur={() => setHoveredKey(undefined)}
+                onClick={() => select(segment.key)}
+                onKeyDown={(event) => handleKeyDown(event, segment.key)}
+              />
+            );
+          })}
+          <text className="donut-number" x="80" y="77" textAnchor="middle">
+            {active?.count ?? total}
+          </text>
+          <text className="donut-caption" x="80" y="96" textAnchor="middle">
+            {active?.label ||
+              (total
+                ? text(locale, "应用实例", "instances")
+                : text(locale, "暂无数据", "No data"))}
+          </text>
+        </svg>
+      </div>
+      <div className="legend">
+        {segments.map((segment) => (
+          <button
+            type="button"
+            className={`legend-row donut-legend-button ${activeKey === segment.key ? "active" : ""}`}
+            key={segment.key}
+            aria-pressed={selectedKey === segment.key}
+            onMouseEnter={() => setHoveredKey(segment.key)}
+            onMouseLeave={() => setHoveredKey(undefined)}
+            onFocus={() => setHoveredKey(segment.key)}
+            onBlur={() => setHoveredKey(undefined)}
+            onClick={() => select(segment.key)}
+          >
+            <span className="legend-name">
+              <span
+                className="legend-dot"
+                style={{ background: `var(--${segment.tone})` }}
+              />
+              {segment.label}
+            </span>
+            <strong>{segment.count}</strong>
+          </button>
+        ))}
+      </div>
+    </>
   );
+}
+
+function donutSegmentPath(startFraction: number, endFraction: number) {
+  const outerRadius = 62;
+  const innerRadius = 40;
+  const center = 80;
+  const fullTurn = Math.PI * 2;
+  const span = Math.max(0, endFraction - startFraction) * fullTurn;
+  const gap = Math.min(0.028, span * 0.2);
+  const startAngle = startFraction * fullTurn - Math.PI / 2 + gap;
+  const endAngle = endFraction * fullTurn - Math.PI / 2 - gap;
+  const outerStart = pointOnCircle(center, outerRadius, startAngle);
+  const outerEnd = pointOnCircle(center, outerRadius, endAngle);
+  const innerEnd = pointOnCircle(center, innerRadius, endAngle);
+  const innerStart = pointOnCircle(center, innerRadius, startAngle);
+  const largeArc = span - gap * 2 > Math.PI ? 1 : 0;
+  return [
+    `M ${outerStart.x} ${outerStart.y}`,
+    `A ${outerRadius} ${outerRadius} 0 ${largeArc} 1 ${outerEnd.x} ${outerEnd.y}`,
+    `L ${innerEnd.x} ${innerEnd.y}`,
+    `A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${innerStart.x} ${innerStart.y}`,
+    "Z",
+  ].join(" ");
+}
+
+function pointOnCircle(center: number, radius: number, angle: number) {
+  return {
+    x: center + radius * Math.cos(angle),
+    y: center + radius * Math.sin(angle),
+  };
 }
 
 export function ApplicationsPage({
@@ -351,13 +527,45 @@ export function ApplicationsPage({
   movePage,
   open,
   run,
-  navigate,
+  initialLoading,
 }: any) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [tab, setTab] = useState("all");
+  const [notice, setNotice] = useState("");
+  const noticeTimer = useRef<number | undefined>(undefined);
   const page = state.applications;
   const syncing = state.sync?.state === "RUNNING";
+  const applicationsLoading = initialLoading || syncing;
+  useEffect(
+    () => () => {
+      if (noticeTimer.current !== undefined)
+        window.clearTimeout(noticeTimer.current);
+    },
+    [],
+  );
+  const flash = (message: unknown) => {
+    const content = toastMessage(message);
+    if (!content) return;
+    if (noticeTimer.current !== undefined)
+      window.clearTimeout(noticeTimer.current);
+    setNotice(content);
+    noticeTimer.current = window.setTimeout(() => {
+      setNotice("");
+      noticeTimer.current = undefined;
+    }, 3000);
+  };
+  const refreshApplications = async () => {
+    const refreshed = await run(() => api.syncApplications());
+    if (refreshed)
+      flash(
+        text(
+          locale,
+          "应用目录刷新已提交，正在同步…",
+          "Application refresh started; syncing…",
+        ),
+      );
+  };
   const submitSearch = (value: string) => {
     setQuery(value);
     window.clearTimeout((submitSearch as any).timer);
@@ -401,34 +609,23 @@ export function ApplicationsPage({
       const succeeded = results.filter(
         (result) => result.status === "fulfilled",
       ).length;
-      window.alert(
+      flash(
         text(
           locale,
-          `已提交 ${succeeded} 个重新检测；${results.length - succeeded} 个实例未能提交。`,
-          `${succeeded} re-probe request(s) submitted; ${results.length - succeeded} could not be submitted.`,
+          `已提交 ${succeeded} 个重新检测，正在同步；${results.length - succeeded} 个实例未能提交。`,
+          `${succeeded} re-probe request(s) submitted; syncing. ${results.length - succeeded} could not be submitted.`,
         ),
       );
       setSelected([]);
     });
-  const openSnapshotForDeploy = async (deployId: string) => {
-    let cursor: string | undefined;
-    let snapshot: any;
-    const completed = await run(async () => {
-      do {
-        const params = new URLSearchParams([["limit", "200"]]);
-        if (cursor) params.set("cursor", cursor);
-        const result = await api.backups(params);
-        snapshot = result.items.find((item: any) => item.deployId === deployId);
-        cursor = result.nextCursor;
-      } while (!snapshot && cursor);
-    });
-    if (completed && snapshot) open("snapshot", snapshot);
-    if (completed && !snapshot)
-      window.alert(
+  const reprobeOne = async (app: any) => {
+    const submitted = await run(() => api.probeInstance(app.deployId));
+    if (submitted)
+      flash(
         text(
           locale,
-          "该实例还没有可查看的已完成快照。",
-          "This instance does not have a completed snapshot to view.",
+          `已提交“${app.name}”的重新检测，正在同步…`,
+          `Re-probe for “${app.name}” submitted; syncing…`,
         ),
       );
   };
@@ -461,7 +658,7 @@ export function ApplicationsPage({
           <>
             <button
               className="button button-secondary"
-              onClick={() => run(() => api.syncApplications())}
+              onClick={() => void refreshApplications()}
             >
               <RefreshCw />
               {text(locale, "重新扫描全部", "Rescan all")}
@@ -611,7 +808,6 @@ export function ApplicationsPage({
                   />
                 </th>
                 <th>{text(locale, "应用", "Application")}</th>
-                <th>{text(locale, "部署实例", "Deployment")}</th>
                 <th>{text(locale, "部署模式", "Mode")}</th>
                 <th>{text(locale, "备份能力", "Capability")}</th>
                 <th>{text(locale, "数据概览", "Data overview")}</th>
@@ -656,7 +852,6 @@ export function ApplicationsPage({
                         </div>
                       </div>
                     </td>
-                    <td className="mono">{app.deployId}</td>
                     <td>
                       <ModeBadge multi={app.multiInstance} />
                     </td>
@@ -665,6 +860,16 @@ export function ApplicationsPage({
                         status={app.capabilityStatus}
                         locale={locale}
                       />
+                      {app.capabilityStatus === "PROBE_FAILED" &&
+                        app.probeErrorCode && (
+                          <div
+                            className="small faint mono"
+                            style={{ marginTop: 5 }}
+                          >
+                            {text(locale, "检测失败码：", "Probe error: ")}
+                            {app.probeErrorCode}
+                          </div>
+                        )}
                     </td>
                     <td>
                       <div className="cell-stack">
@@ -675,9 +880,13 @@ export function ApplicationsPage({
                           {bytes(app.totalBytes, locale)}
                         </strong>
                         <span className="faint">
-                          {app.fileCount} {text(locale, "文件", "files")} ·{" "}
-                          {app.sqliteCount} SQLite
+                          {app.fileCount} {text(locale, "文件", "files")}
                         </span>
+                        {app.sqliteCount > 0 && (
+                          <span className="faint">
+                            {app.sqliteCount} SQLite 3
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td>
@@ -720,7 +929,10 @@ export function ApplicationsPage({
                           label={text(locale, "创建计划", "Create plan")}
                           disabled={!capable(app)}
                           onClick={() =>
-                            open("plan", { initialDeployIds: [app.deployId] })
+                            open("plan", {
+                              initialDeployIds: [app.deployId],
+                              fixedDeployId: app.deployId,
+                            })
                           }
                         >
                           <Calendar size={15} />
@@ -732,35 +944,8 @@ export function ApplicationsPage({
                           <Eye size={15} />
                         </TableIconButton>
                         <TableIconButton
-                          label={text(locale, "查看任务", "View tasks")}
-                          onClick={() => {
-                            void setFilter("tasks", {
-                              deploy_id: app.deployId,
-                              status: undefined,
-                              batch_id: undefined,
-                            });
-                            navigate(
-                              "tasks",
-                              `?deploy_id=${encodeURIComponent(app.deployId)}`,
-                            );
-                          }}
-                        >
-                          <ListChecks size={15} />
-                        </TableIconButton>
-                        <TableIconButton
-                          label={text(locale, "查看快照", "View snapshots")}
-                          disabled={!app.lastBackupAt}
-                          onClick={() =>
-                            void openSnapshotForDeploy(app.deployId)
-                          }
-                        >
-                          <Archive size={15} />
-                        </TableIconButton>
-                        <TableIconButton
                           label={text(locale, "重新检测", "Re-probe")}
-                          onClick={() =>
-                            run(() => api.probeInstance(app.deployId))
-                          }
+                          onClick={() => void reprobeOne(app)}
                         >
                           <RefreshCw size={15} />
                         </TableIconButton>
@@ -770,10 +955,10 @@ export function ApplicationsPage({
                 ))
               ) : (
                 <tr>
-                  <td colSpan={11}>
+                  <td colSpan={10}>
                     <Empty
                       label={
-                        syncing
+                        applicationsLoading
                           ? text(
                               locale,
                               "正在同步当前账号的应用目录…",
@@ -799,6 +984,11 @@ export function ApplicationsPage({
         onMove={(direction) => movePage("applications", direction)}
         onLimit={(limit) => setFilter("applications", { limit: String(limit) })}
       />
+      {notice && (
+        <div className="toast" role="status" aria-live="polite">
+          {notice}
+        </div>
+      )}
     </div>
   );
 }
@@ -836,9 +1026,26 @@ function DatabaseFeatures({
     );
   const sqlite = findings.filter(
     (finding) =>
-      finding.supported && finding.type?.toLowerCase().includes("sqlite"),
+      finding.supported &&
+      String(finding.type || "").toLowerCase().includes("sqlite"),
   );
-  const others = findings.filter((finding) => !sqlite.includes(finding));
+  const groups = Array.from(
+    findings
+      .filter((finding) => !sqlite.includes(finding))
+      .reduce((result, finding) => {
+        const type = (finding.type || "unknown").toLowerCase();
+        const key = `${type}:${finding.supported ? "supported" : "blocked"}`;
+        const current = result.get(key) || {
+          type,
+          supported: finding.supported,
+          findings: [],
+        };
+        current.findings.push(finding);
+        result.set(key, current);
+        return result;
+      }, new Map<string, { type: string; supported: boolean; findings: any[] }>())
+      .values(),
+  );
   return (
     <div className="cell-stack">
       {sqlite.length > 0 && (
@@ -850,33 +1057,96 @@ function DatabaseFeatures({
           SQLite 3 · {sqlite.length}
         </span>
       )}
-      {others.slice(0, sqlite.length ? 1 : 2).map((finding) => (
+      {groups.slice(0, sqlite.length ? 1 : 2).map((group) => (
         <span
-          className={`db-badge ${finding.supported ? (finding.type.toLowerCase().includes("sqlite") ? "db-sqlite" : "db-plain") : "db-blocked"}`}
-          key={`${finding.type}-${finding.path}`}
-          title={`${finding.path}${finding.reason ? ` · ${finding.reason}` : ""}`}
+          className={`db-badge ${group.supported ? "db-plain" : "db-blocked"}`}
+          key={`${group.type}-${group.supported ? "supported" : "blocked"}`}
+          title={group.findings
+            .map(
+              (finding) =>
+                `${finding.path}${finding.reason ? ` · ${finding.reason}` : ""}`,
+            )
+            .join("\n")}
         >
           <Database size={12} />
-          {finding.type}
-          {finding.supported
+          {databaseTypeLabel(group.type, locale)}
+          {group.findings.length > 1 ? ` · ${group.findings.length}` : ""}
+          {group.supported
             ? ""
             : ` · ${text(locale, "不支持", "unsupported")}`}
         </span>
       ))}
-      {others.length > (sqlite.length ? 1 : 2) && (
+      {groups.length > (sqlite.length ? 1 : 2) && (
         <span className="faint">
-          +{others.length - (sqlite.length ? 1 : 2)}
+          +{groups.length - (sqlite.length ? 1 : 2)} {text(locale, "类", "types")}
         </span>
       )}
     </div>
   );
 }
 
-export function PlansPage({ state, locale, timezone, open, run }: any) {
+export function PlansPage({ state, locale, timezone, open }: any) {
   const apps = new Map(
     state.applications.items.map((app: any) => [app.deployId, app]),
   );
   const latest = state.batches.items;
+  const failedBatchKey = useMemo(
+    () =>
+      latest
+        .filter((batch: any) => batch.status === "FAILED" && batch.planId)
+        .map((batch: any) => batch.id)
+        .sort()
+        .join(","),
+    [latest],
+  );
+  const [failureReasons, setFailureReasons] = useState<
+    Record<string, { codes: string[]; unavailable?: boolean }>
+  >({});
+  useEffect(() => {
+    const batchIDs = failedBatchKey ? failedBatchKey.split(",") : [];
+    let active = true;
+    if (!batchIDs.length) {
+      setFailureReasons({});
+      return () => {
+        active = false;
+      };
+    }
+    setFailureReasons(
+      Object.fromEntries(batchIDs.map((id) => [id, { codes: [] }])),
+    );
+    void Promise.all(
+      batchIDs.map(async (batchID) => {
+        try {
+          const tasks = await api.tasks(
+            new URLSearchParams([
+              ["batch_id", batchID],
+              ["limit", "200"],
+            ]),
+          );
+          const codes = [
+            ...new Set(
+              (tasks.items || [])
+                .filter(
+                  (task: any) =>
+                    ["FAILED", "TIMED_OUT", "CANCELLED", "INTERRUPTED"].includes(
+                      task.status,
+                    ) && task.errorCode,
+                )
+                .map((task: any) => task.errorCode),
+            ),
+          ];
+          return [batchID, { codes }] as const;
+        } catch {
+          return [batchID, { codes: [], unavailable: true }] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (active) setFailureReasons(Object.fromEntries(entries));
+    });
+    return () => {
+      active = false;
+    };
+  }, [failedBatchKey]);
   return (
     <div className="page">
       <PageHeader
@@ -902,6 +1172,7 @@ export function PlansPage({ state, locale, timezone, open, run }: any) {
             const result = latest.find(
               (batch: any) => batch.planId === plan.id,
             );
+            const failure = result ? failureReasons[result.id] : undefined;
             return (
               <div className="plan-card" key={plan.id}>
                 <div className="plan-top">
@@ -924,7 +1195,30 @@ export function PlansPage({ state, locale, timezone, open, run }: any) {
                     <button
                       className="icon-button primary"
                       title={text(locale, "立即执行", "Run now")}
-                      onClick={() => run(() => api.runPlan(plan.id))}
+                      aria-label={text(locale, "立即执行", "Run now")}
+                      onClick={() =>
+                        open("confirm", {
+                          action: "run",
+                          title: text(locale, "确认立即执行", "Confirm run now"),
+                          description: text(
+                            locale,
+                            "立即执行会创建一次备份批次，不会修改计划的执行频率。",
+                            "Run now creates one backup batch and does not change the plan schedule.",
+                          ),
+                          confirmLabel: text(locale, "立即备份", "Back up now"),
+                          operation: () => api.runPlan(plan.id),
+                          success: text(
+                            locale,
+                            "已创建一次备份批次",
+                            "Backup batch created",
+                          ),
+                          failure: text(
+                            locale,
+                            "备份批次创建失败，请稍后重试",
+                            "The backup batch could not be created. Try again later.",
+                          ),
+                        })
+                      }
                     >
                       <Play size={15} />
                     </button>
@@ -935,12 +1229,48 @@ export function PlansPage({ state, locale, timezone, open, run }: any) {
                           ? text(locale, "暂停", "Pause")
                           : text(locale, "启用", "Enable")
                       }
+                      aria-label={
+                        plan.enabled
+                          ? text(locale, "暂停", "Pause")
+                          : text(locale, "启用", "Enable")
+                      }
                       onClick={() =>
-                        run(() =>
-                          plan.enabled
-                            ? api.pausePlan(plan.id)
-                            : api.resumePlan(plan.id),
-                        )
+                        open("confirm", {
+                          action: plan.enabled ? "pause" : "resume",
+                          title: plan.enabled
+                            ? text(locale, "确认暂停计划", "Confirm pause plan")
+                            : text(locale, "确认恢复计划", "Confirm resume plan"),
+                          description: plan.enabled
+                            ? text(
+                                locale,
+                                "暂停只会停止后续计划调度，不会中断已经运行的备份任务。",
+                                "Pausing only stops future scheduled runs. Backups already running will continue.",
+                              )
+                            : text(
+                                locale,
+                                "恢复后，计划会继续按当前频率创建后续备份任务。",
+                                "Resuming lets the plan create future backup tasks on its current schedule.",
+                              ),
+                          confirmLabel: plan.enabled
+                            ? text(locale, "确认暂停", "Pause plan")
+                            : text(locale, "确认恢复", "Resume plan"),
+                          operation: () =>
+                            plan.enabled
+                              ? api.pausePlan(plan.id)
+                              : api.resumePlan(plan.id),
+                          success: plan.enabled
+                            ? text(
+                                locale,
+                                "计划已暂停，正在执行的任务不会受影响",
+                                "Plan paused. Running backups were not interrupted.",
+                              )
+                            : text(locale, "计划已恢复", "Plan resumed"),
+                          failure: text(
+                            locale,
+                            "计划状态更新失败，请稍后重试",
+                            "The plan status could not be updated. Try again later.",
+                          ),
+                        })
                       }
                     >
                       {plan.enabled ? <Pause size={15} /> : <Play size={15} />}
@@ -948,6 +1278,7 @@ export function PlansPage({ state, locale, timezone, open, run }: any) {
                     <button
                       className="icon-button"
                       title={text(locale, "详情", "Details")}
+                      aria-label={text(locale, "详情", "Details")}
                       onClick={() => open("plan-detail", plan)}
                     >
                       <Eye size={15} />
@@ -955,6 +1286,7 @@ export function PlansPage({ state, locale, timezone, open, run }: any) {
                     <button
                       className="icon-button"
                       title={text(locale, "编辑", "Edit")}
+                      aria-label={text(locale, "编辑", "Edit")}
                       onClick={() => open("plan", plan)}
                     >
                       <SlidersHorizontal size={15} />
@@ -968,16 +1300,34 @@ export function PlansPage({ state, locale, timezone, open, run }: any) {
                     </div>
                     <div className="target-tags">
                       {plan.targets?.map((target: any) => (
-                        <span className="target-tag" key={target.deployId}>
-                          <span className="target-tag-dot" />
-                          {apps.get(target.deployId)?.name || target.deployId}
-                        </span>
+                        (() => {
+                          const app = apps.get(target.deployId) || target;
+                          const name =
+                            app?.name ||
+                            target.applicationName ||
+                            target.deployId;
+                          return (
+                            <span className="target-tag" key={target.deployId}>
+                              <AppMark
+                                app={app}
+                                name={name}
+                                tone={appTone(target.deployId)}
+                              />
+                              {name}
+                            </span>
+                          );
+                        })()
                       ))}
                     </div>
                   </div>
                   <Summary
                     label={text(locale, "执行频率", "Schedule")}
-                    value={`${plan.scheduleType} · ${plan.executionTime || plan.cronExpression || "—"}`}
+                    value={scheduleLabel(
+                      plan.scheduleType,
+                      plan.executionTime,
+                      plan.cronExpression,
+                      locale,
+                    )}
                   />
                   <Summary
                     label={text(locale, "下次执行", "Next run")}
@@ -994,6 +1344,34 @@ export function PlansPage({ state, locale, timezone, open, run }: any) {
                     )}
                   </div>
                 </div>
+                {result?.status === "FAILED" && (
+                  <div
+                    className="callout callout-danger"
+                    role="status"
+                    style={{ marginTop: 14 }}
+                  >
+                    <div className="summary-label">
+                      {text(locale, "失败原因", "Failure reason")}
+                    </div>
+                    {!failure
+                      ? text(
+                          locale,
+                          "正在读取失败原因…",
+                          "Loading failure reason…",
+                        )
+                      : failure.unavailable
+                        ? text(
+                            locale,
+                            "暂时无法读取失败原因，请在任务中心查看详情。",
+                            "The failure reason is temporarily unavailable. View task details in Task Center.",
+                          )
+                        : failure.codes.length
+                          ? failure.codes
+                              .map((code) => apiErrorLabel(code, locale))
+                              .join(locale === "zh-CN" ? "；" : " · ")
+                          : apiErrorLabel("BACKUP_FAILED", locale)}
+                  </div>
+                )}
                 <div className="plan-history">
                   <span className="history-label">
                     {text(locale, "保留策略", "Retention")}
@@ -1046,224 +1424,92 @@ export function TasksPage({
 }: any) {
   const deployId =
     new URLSearchParams(window.location.search).get("deploy_id") || "";
-  const [view, setView] = useState<"current" | "history">(() =>
-    deployId ? "history" : "current",
-  );
   const [status, setStatus] = useState("");
-  const tasks = state.tasks.items;
-  const current = tasks.filter(
-    (task: any) =>
-      ![
-        "SUCCEEDED",
-        "SUCCEEDED_WITH_WARNINGS",
-        "FAILED",
-        "CANCELLED",
-        "TIMED_OUT",
-        "SKIPPED",
-        "INTERRUPTED",
-      ].includes(task.status),
-  );
+  const taskPage = state.tasks;
   return (
     <div className="page">
       <PageHeader
         title={text(locale, "任务中心", "Task center")}
         desc={text(
           locale,
-          "任务、批次与执行状态均以服务端记录为准。总队列暂停功能当前不可用。",
-          "Tasks, batches, and statuses come from server records. Global queue pause is unavailable.",
+          "任务记录以服务端状态为准，可从这里追踪备份结果。",
+          "Track backup results from server-backed task records.",
         )}
         actions={
           <>
             <span className="status-badge status-accent">
-              {text(locale, "运行中", "Running")}{" "}
+              {text(locale, "运行中", "Running")} {" "}
               {state.overview?.runningTasks ?? 0}
             </span>
-            <span className="status-badge status-neutral">
-              {text(locale, "排队中", "Queued")}{" "}
-              {state.overview?.queuedTasks ?? 0}
-            </span>
             <span className="status-badge status-danger">
-              {text(locale, "24 小时失败", "Failed in 24h")}{" "}
+              {text(locale, "24 小时失败", "Failed in 24h")} {" "}
               {state.overview?.failed24h ?? 0}
             </span>
-            <button className="button button-secondary" disabled>
-              <Pause />
-              {text(locale, "暂停总队列不可用", "Global pause unavailable")}
-            </button>
           </>
         }
       />
-      <div className="tab-strip">
-        <button
-          className={`tab-button ${view === "current" ? "active" : ""}`}
-          onClick={() => setView("current")}
-        >
-          {text(locale, "当前执行", "Current execution")}{" "}
-          <span className="faint">{current.length}</span>
-        </button>
-        <button
-          className={`tab-button ${view === "history" ? "active" : ""}`}
-          onClick={() => setView("history")}
-        >
-          {text(locale, "任务历史", "Task history")}
-        </button>
-      </div>
-      {view === "current" ? (
-        <div className="stack">
-          <Panel
-            title={text(locale, "运行队列", "Running queue")}
-            icon="archive"
-          >
-            {current.length ? (
-              <div className="list">
-                {current.map((task: any) => (
-                  <div className="list-row" key={task.id}>
-                    <div className="kpi-icon tone-navy">
-                      <RefreshCw />
-                    </div>
-                    <div className="list-main">
-                      <div className="list-title">
-                        {task.applicationName}{" "}
-                        <span className="faint mono">· {task.deployId}</span>
-                      </div>
-                      <div className="list-meta mono">
-                        {task.id} · {date(task.scheduledAt, locale, timezone)}
-                      </div>
-                    </div>
-                    <div className="list-end">
-                      <StatusBadge status={task.status} locale={locale} />
-                      <button
-                        className="button button-quiet"
-                        onClick={() => open("task", task)}
-                      >
-                        {text(locale, "详情", "Details")}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <Empty
-                label={text(
-                  locale,
-                  "当前没有进行中的备份",
-                  "No backup is currently running",
-                )}
-              />
-            )}
-          </Panel>
-          <BatchList
-            page={state.batches}
-            locale={locale}
-            timezone={timezone}
-            open={open}
-            movePage={movePage}
-            setFilter={setFilter}
-          />
-        </div>
-      ) : (
-        <>
-          <div className="filter-bar">
-            {deployId && (
-              <button
-                className="button button-secondary"
-                onClick={() => {
-                  void setFilter("tasks", { deploy_id: undefined });
-                  navigate("tasks");
-                }}
-              >
-                <ListChecks />
-                {text(locale, "查看全部任务", "View all tasks")}
-              </button>
-            )}
-            <select
-              className="select"
-              value={status}
-              onChange={(event) => {
-                setStatus(event.target.value);
-                setFilter("tasks", { status: event.target.value });
+      <div className="stack">
+        <div className="filter-bar">
+          {deployId && (
+            <button
+              className="button button-secondary"
+              onClick={() => {
+                void setFilter("tasks", { deploy_id: undefined });
+                navigate("tasks");
               }}
             >
-              <option value="">
-                {text(locale, "状态 · 全部", "Status · all")}
-              </option>
-              <option value="SUCCEEDED">
-                {text(locale, "成功", "Succeeded")}
-              </option>
-              <option value="FAILED">{text(locale, "失败", "Failed")}</option>
-              <option value="QUEUED">{text(locale, "排队中", "Queued")}</option>
-            </select>
-          </div>
-          <TaskTable
-            tasks={tasks}
-            locale={locale}
-            timezone={timezone}
-            open={open}
-            run={run}
-          />
-          <Pager
-            page={state.tasks}
-            locale={locale}
-            onMove={(direction) => movePage("tasks", direction)}
-            onLimit={(limit) => setFilter("tasks", { limit: String(limit) })}
-          />
-        </>
-      )}
+              <ListChecks />
+              {text(locale, "查看全部任务", "View all tasks")}
+            </button>
+          )}
+          <select
+            className="select"
+            value={status}
+            onChange={(event) => {
+              setStatus(event.target.value);
+              setFilter("tasks", { status: event.target.value });
+            }}
+          >
+            <option value="">
+              {text(locale, "状态 · 全部", "Status · all")}
+            </option>
+            <option value="SUCCEEDED">
+              {text(locale, "成功", "Succeeded")}
+            </option>
+            <option value="FAILED">{text(locale, "失败", "Failed")}</option>
+          </select>
+        </div>
+        <TaskTable
+          tasks={taskPage.items}
+          applications={state.applications.items}
+          loading={pagePending(taskPage)}
+          locale={locale}
+          timezone={timezone}
+          open={open}
+          run={run}
+        />
+        <Pager
+          page={taskPage}
+          locale={locale}
+          onMove={(direction) => movePage("tasks", direction)}
+          onLimit={(limit) => setFilter("tasks", { limit: String(limit) })}
+        />
+      </div>
     </div>
   );
 }
-function BatchList({ page, locale, timezone, open, movePage, setFilter }: any) {
-  const batches = page.items;
-  return (
-    <Panel
-      title={text(locale, "最近备份批次", "Recent backup batches")}
-      icon="archive"
-    >
-      {batches.length ? (
-        <div className="list">
-          {batches.map((batch: any) => (
-            <button
-              className="list-row"
-              key={batch.id}
-              onClick={() => open("batch", batch)}
-              style={{
-                background: "transparent",
-                textAlign: "left",
-                width: "100%",
-              }}
-            >
-              <div className="list-main">
-                <div className="list-title">
-                  {batch.planName || text(locale, "手动备份", "Manual backup")}
-                </div>
-                <div className="list-meta mono">
-                  {batch.id} · {date(batch.createdAt, locale, timezone)}
-                </div>
-                <div className="list-meta">
-                  {text(locale, "任务", "Tasks")} {batch.totalTasks} ·{" "}
-                  {text(locale, "成功", "Succeeded")} {batch.succeeded} ·{" "}
-                  {text(locale, "失败", "Failed")} {batch.failed}
-                </div>
-              </div>
-              <div className="list-end">
-                <StatusBadge status={batch.status} locale={locale} />
-              </div>
-            </button>
-          ))}
-        </div>
-      ) : (
-        <Empty label={text(locale, "暂无批次记录", "No batch records")} />
-      )}
-      <Pager
-        page={page}
-        locale={locale}
-        onMove={(direction) => movePage("batches", direction)}
-        onLimit={(limit) => setFilter("batches", { limit: String(limit) })}
-      />
-    </Panel>
+function TaskTable({
+  tasks,
+  applications = [],
+  loading = false,
+  locale,
+  timezone,
+  open,
+  run,
+}: any) {
+  const appMap = new Map(
+    applications.map((app: any) => [app.deployId, app]),
   );
-}
-function TaskTable({ tasks, locale, timezone, open, run }: any) {
   return (
     <Panel className="table-panel">
       <div className="table-scroll">
@@ -1271,7 +1517,7 @@ function TaskTable({ tasks, locale, timezone, open, run }: any) {
           <thead>
             <tr>
               <th>
-                {text(locale, "应用 / deploy_id", "Application / deploy_id")}
+                {text(locale, "应用", "Application")}
               </th>
               <th>{text(locale, "状态", "Status")}</th>
               <th>{text(locale, "计划时间", "Scheduled")}</th>
@@ -1284,13 +1530,30 @@ function TaskTable({ tasks, locale, timezone, open, run }: any) {
             </tr>
           </thead>
           <tbody>
-            {tasks.length ? (
+            {loading ? (
+              <tr>
+                <td colSpan={7}>
+                  <Loading
+                    label={text(locale, "正在读取任务记录…", "Loading task records…")}
+                  />
+                </td>
+              </tr>
+            ) : tasks.length ? (
               tasks.map((task: any) => (
                 <tr key={task.id}>
                   <td>
-                    <div className="cell-stack">
-                      <strong>{task.applicationName}</strong>
-                      <span className="mono faint">{task.deployId}</span>
+                    <div className="app-cell">
+                      <AppMark
+                        app={appMap.get(task.deployId) || task}
+                        name={task.applicationName || task.appid || task.deployId}
+                        tone={appTone(task.deployId)}
+                      />
+                      <div className="cell-stack">
+                        <strong>
+                          {task.applicationName || task.appid || task.deployId}
+                        </strong>
+                        <span className="mono faint">{task.deployId}</span>
+                      </div>
                     </div>
                   </td>
                   <td>
@@ -1307,7 +1570,11 @@ function TaskTable({ tasks, locale, timezone, open, run }: any) {
                   <td>
                     {task.attemptCount}/{task.maxRetries + 1}
                   </td>
-                  <td className="mono faint">{task.errorCode || "—"}</td>
+                  <td className="faint">
+                    {task.errorCode
+                      ? apiErrorLabel(task.errorCode, locale)
+                      : "—"}
+                  </td>
                   <td>
                     <div
                       className="actions-cell"
@@ -1334,14 +1601,6 @@ function TaskTable({ tasks, locale, timezone, open, run }: any) {
                           onClick={() => run(() => api.retryTask(task.id))}
                         >
                           <RefreshCw size={15} />
-                        </TableIconButton>
-                      )}
-                      {task.status === "QUEUED" && (
-                        <TableIconButton
-                          label={text(locale, "取消任务", "Cancel task")}
-                          onClick={() => run(() => api.cancelTask(task.id))}
-                        >
-                          <Pause size={15} />
                         </TableIconButton>
                       )}
                     </div>
@@ -1377,6 +1636,13 @@ export function BackupsPage({
   open,
 }: any) {
   const page = state.backups;
+  const applications = useMemo(
+    () =>
+      new Map(
+        state.applications.items.map((app: any) => [app.deployId, app]),
+      ),
+    [state.applications.items],
+  );
   return (
     <div className="page">
       <PageHeader
@@ -1399,7 +1665,6 @@ export function BackupsPage({
               <tr>
                 <th>{text(locale, "完成时间", "Finished")}</th>
                 <th>{text(locale, "应用", "Application")}</th>
-                <th>{text(locale, "部署实例", "Deployment")}</th>
                 <th>{text(locale, "部署模式", "Mode")}</th>
                 <th>
                   {text(locale, "文件 / 原始大小", "Files / original size")}
@@ -1408,7 +1673,7 @@ export function BackupsPage({
                 <th>SQLite</th>
                 <th>{text(locale, "完整性", "Integrity")}</th>
                 <th>{text(locale, "最近校验", "Last verified")}</th>
-                <th>{text(locale, "保留状态", "Retention")}</th>
+                <th>{text(locale, "保留情况", "Retention state")}</th>
                 <th>{text(locale, "存储状态", "Storage status")}</th>
                 <th>
                   {text(locale, "操作", "Actions")}
@@ -1416,7 +1681,19 @@ export function BackupsPage({
               </tr>
             </thead>
             <tbody>
-              {page.items.length ? (
+              {pagePending(page) ? (
+                <tr>
+                  <td colSpan={11}>
+                    <Loading
+                      label={text(
+                        locale,
+                        "正在读取备份库…",
+                        "Loading backup library…",
+                      )}
+                    />
+                  </td>
+                </tr>
+              ) : page.items.length ? (
                 page.items.map((snapshot: any) => (
                   <tr key={snapshot.id}>
                     <td className="mono">
@@ -1425,7 +1702,8 @@ export function BackupsPage({
                     <td>
                       <div className="app-cell">
                         <AppMark
-                          name={snapshot.applicationName}
+                          app={applications.get(snapshot.deployId) || snapshot}
+                          name={snapshot.applicationName || snapshot.appid || snapshot.deployId}
                           tone={appTone(snapshot.deployId)}
                         />
                         <div>
@@ -1439,7 +1717,6 @@ export function BackupsPage({
                         </div>
                       </div>
                     </td>
-                    <td className="mono">{snapshot.deployId}</td>
                     <td>
                       <ModeBadge
                         multi={snapshot.multiInstance}
@@ -1467,6 +1744,13 @@ export function BackupsPage({
                       <StatusBadge
                         status={snapshot.retentionStatus}
                         locale={locale}
+                        label={
+                          snapshot.retentionStatus === "ACTIVE"
+                            ? text(locale, "保留中", "Retained")
+                            : snapshot.retentionStatus === "TRASHED"
+                              ? text(locale, "已移入回收站", "Moved to trash")
+                              : undefined
+                        }
                       />
                     </td>
                     <td>
@@ -1693,7 +1977,13 @@ export function AlertsPage({
         }
       />
       <div className="stack">
-        {alerts.items.length ? (
+        {pagePending(alerts) ? (
+          <Panel>
+            <Loading
+              label={text(locale, "正在读取告警…", "Loading alerts…")}
+            />
+          </Panel>
+        ) : alerts.items.length ? (
           alerts.items.map((alert: any) => (
             <Panel key={alert.id}>
               <div
@@ -1815,12 +2105,12 @@ export function SettingsPage({
   movePage,
   setFilter,
 }: any) {
-  const [category, setCategory] = useState<
-    "personal" | "preference" | "maintenance"
-  >("personal");
   const [item, setItem] = useState("account");
   const [draft, setDraft] = useState<any>(state.settings);
   const [notice, setNotice] = useState("");
+  const [browserPermission, setBrowserPermission] =
+    useState<BrowserNotificationPermission>(browserNotificationPermission);
+  const noticeTimer = useRef<number | undefined>(undefined);
   const values = draft || state.settings;
   useEffect(() => {
     if (!state.settings) return;
@@ -1830,6 +2120,13 @@ export function SettingsPage({
         : state.settings,
     );
   }, [state.settings]);
+  useEffect(
+    () => () => {
+      if (noticeTimer.current !== undefined)
+        window.clearTimeout(noticeTimer.current);
+    },
+    [],
+  );
   if (!values)
     return (
       <div className="page">
@@ -1837,9 +2134,16 @@ export function SettingsPage({
         <Empty label={text(locale, "正在读取设置", "Loading settings")} />
       </div>
     );
-  const flash = (message: string) => {
-    setNotice(message);
-    window.setTimeout(() => setNotice(""), 3000);
+  const flash = (message: unknown) => {
+    const content = toastMessage(message);
+    if (!content) return;
+    if (noticeTimer.current !== undefined)
+      window.clearTimeout(noticeTimer.current);
+    setNotice(content);
+    noticeTimer.current = window.setTimeout(() => {
+      setNotice("");
+      noticeTimer.current = undefined;
+    }, 3000);
   };
   const save = async (
     next: any,
@@ -1857,6 +2161,31 @@ export function SettingsPage({
     void save({ ...values, ...patch }, message);
   const updateRetry = (maxRetries: number) =>
     update({ retry: { ...values.retry, maxRetries } });
+  const enableBrowserNotifications = async () => {
+    const permission = await requestBrowserNotificationPermission();
+    setBrowserPermission(permission);
+    if (permission === "granted") {
+      flash(text(locale, "浏览器通知已启用", "Browser notifications enabled"));
+      return;
+    }
+    if (permission === "denied") {
+      flash(
+        text(
+          locale,
+          "浏览器已阻止通知，请在浏览器站点设置中允许。",
+          "Notifications are blocked. Allow them in this browser's site settings.",
+        ),
+      );
+      return;
+    }
+    flash(
+      text(
+        locale,
+        "当前页面无法请求浏览器通知。",
+        "Browser notifications are unavailable on this page.",
+      ),
+    );
+  };
   const menu = [
     {
       key: "personal",
@@ -1907,10 +2236,7 @@ export function SettingsPage({
       ],
     },
   ];
-  const pick = (nextCategory: typeof category, nextItem: string) => {
-    setCategory(nextCategory);
-    setItem(nextItem);
-  };
+  const pick = (nextItem: string) => setItem(nextItem);
   const renderedDetail = () => {
     if (item === "account")
       return (
@@ -1953,10 +2279,6 @@ export function SettingsPage({
               label={text(locale, "身份一致性", "Identity match")}
               value={text(locale, "已验证", "Verified")}
             />
-            <Detail
-              label={text(locale, "管理员能力", "Administrator access")}
-              value={text(locale, "不启用跨用户功能", "No cross-user access")}
-            />
           </div>
           <div
             className="header-actions"
@@ -1972,17 +2294,6 @@ export function SettingsPage({
             >
               <LogIn />
               {text(locale, "重新登录", "Sign in again")}
-            </button>
-            <button
-              className="button button-quiet"
-              onClick={() =>
-                window.location.assign(
-                  `/auth/login?return_to=${encodeURIComponent(window.location.pathname)}`,
-                )
-              }
-            >
-              <TimerReset />
-              {text(locale, "重新验证会话", "Revalidate session")}
             </button>
             <button
               className="button button-quiet"
@@ -2129,8 +2440,8 @@ export function SettingsPage({
               <p>
                 {text(
                   locale,
-                  "已接入的通知规则会立即保存。",
-                  "Connected notification rules are saved immediately.",
+                  "任务终态会发送懒猫平台消息；浏览器通知还需要在当前浏览器中单独授权。未授权时仍保留站内告警。",
+                  "Task results send Lazycat platform messages. Browser notifications also need permission in this browser; in-app alerts remain available without it.",
                 )}
               </p>
             </div>
@@ -2140,8 +2451,8 @@ export function SettingsPage({
               title={text(locale, "首次失败", "First failure")}
               desc={text(
                 locale,
-                "每个计划首次失败时通知",
-                "Notify on the first failure of each plan",
+                "每个计划首次失败时向懒猫消息中心和已授权浏览器通知",
+                "Notify Lazycat messages and authorized browsers on the first failure of each plan",
               )}
               checked={values.notifyFirstFailure}
               onChange={() =>
@@ -2152,12 +2463,39 @@ export function SettingsPage({
               title={text(locale, "成功通知", "Success notification")}
               desc={text(
                 locale,
-                "每次成功完成时发送通知",
-                "Notify on every successful completion",
+                "每次成功完成时向懒猫消息中心和已授权浏览器通知",
+                "Notify Lazycat messages and authorized browsers on every successful completion",
               )}
               checked={values.notifySuccess}
               onChange={() => update({ notifySuccess: !values.notifySuccess })}
             />
+            <div className="toggle-row">
+              <div className="toggle-copy">
+                <div className="toggle-title">
+                  {text(locale, "浏览器通知", "Browser notifications")}
+                </div>
+                <div className="toggle-desc">
+                  {text(
+                    locale,
+                    "授权后，页面保持打开且浏览器运行时，成功和失败终态会显示系统级横幅；关闭页面后无法接收。",
+                    "When authorized, terminal success and failure results show system-level notifications while this page remains open and the browser is running.",
+                  )}
+                </div>
+              </div>
+              <button
+                className="button button-secondary"
+                disabled={browserPermission !== "default"}
+                onClick={() => void enableBrowserNotifications()}
+              >
+                {browserPermission === "granted"
+                  ? text(locale, "已授权", "Authorized")
+                  : browserPermission === "denied"
+                    ? text(locale, "已被浏览器阻止", "Blocked by browser")
+                    : browserPermission === "unsupported"
+                      ? text(locale, "当前浏览器不支持", "Unsupported")
+                      : text(locale, "授权浏览器通知", "Allow browser notifications")}
+              </button>
+            </div>
           </div>
         </>
       );
@@ -2256,20 +2594,24 @@ export function SettingsPage({
         </div>
         <div className="list">
           {[
-            "appvar.other.read · 只读投影",
-            "document.write · 当前用户网盘",
-            "user.notify · 系统通知（可选）",
-            "appvar 投影 · 当前账号数据目录可读",
-          ].map((value) => (
-            <div className="list-row" key={value}>
+            { label: "appvar.other.read · 只读投影", optional: false },
+            { label: "document.write · 当前用户网盘", optional: false },
+            { label: "user.notify · 系统通知（可选）", optional: true },
+            { label: "appvar 投影 · 当前账号数据目录可读", optional: false },
+          ].map(({ label, optional }) => (
+            <div className="list-row" key={label}>
               <Lock color="var(--navy)" size={16} />
               <div className="list-main">
-                <div className="list-title mono">{value}</div>
+                <div className="list-title mono">{label}</div>
               </div>
               <StatusBadge
                 status="ACTIVE"
                 locale={locale}
-                label={text(locale, "已授权", "Granted")}
+                label={
+                  optional
+                    ? text(locale, "可选", "Optional")
+                    : text(locale, "已授权", "Granted")
+                }
               />
             </div>
           ))}
@@ -2310,7 +2652,10 @@ export function SettingsPage({
         )}
       />
       <div className="settings-layout">
-        <aside className="settings-menu">
+        <aside
+          className="settings-menu"
+          aria-label={text(locale, "设置菜单", "Settings menu")}
+        >
           {menu.map((group) => (
             <div key={group.key}>
               <div className="settings-section">{group.title}</div>
@@ -2320,9 +2665,7 @@ export function SettingsPage({
                   <button
                     key={entry.key}
                     className={`settings-item ${item === entry.key ? "active" : ""}`}
-                    onClick={() =>
-                      pick(group.key as typeof category, entry.key)
-                    }
+                    onClick={() => pick(entry.key)}
                   >
                     <Icon />
                     {entry.label}
@@ -2333,36 +2676,6 @@ export function SettingsPage({
           ))}
         </aside>
         <section className="settings-content">
-          <div className="settings-index">
-            {menu
-              .flatMap((group) =>
-                group.items.map((entry) => ({ ...entry, group: group.key })),
-              )
-              .map((entry) => {
-                const Icon = entry.icon;
-                return (
-                  <button
-                    className="setting-entry"
-                    key={entry.key}
-                    onClick={() =>
-                      pick(entry.group as typeof category, entry.key)
-                    }
-                  >
-                    <span>
-                      <span className="setting-entry-title">{entry.label}</span>
-                      <span className="setting-entry-desc">
-                        {text(
-                          locale,
-                          "进入查看相关设置",
-                          "Open related settings",
-                        )}
-                      </span>
-                    </span>
-                    <Icon size={16} color="var(--navy)" />
-                  </button>
-                );
-              })}
-          </div>
           <Panel>
             <div className="panel-body">{renderedDetail()}</div>
           </Panel>

@@ -18,6 +18,10 @@ import {
 export function cn(...values: Array<string | false | undefined>) {
   return values.filter(Boolean).join(" ");
 }
+export function toastMessage(value: unknown) {
+  const message = typeof value === "string" ? value.trim() : "";
+  return ["zh-CN", "en-US"].includes(message) ? "" : message;
+}
 export function bytes(value?: number, locale = "zh-CN") {
   if (!value) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -61,6 +65,7 @@ export function statusTone(status = "") {
       "WARNING",
       "OPEN",
       "MUTED",
+      "SYSTEM_UNSUPPORTED",
     ].includes(status)
   )
     return "status-warning";
@@ -75,6 +80,7 @@ export function statusTone(status = "") {
       "EMERGENCY",
       "MISSING",
       "INACCESSIBLE",
+      "TRASHED",
     ].includes(status)
   )
     return "status-danger";
@@ -131,6 +137,7 @@ export function statusLabel(status = "", locale = "zh-CN") {
     MISSING: "目录已删除",
     INACCESSIBLE: "目录不可访问",
     ACTIVE: "已启用",
+    TRASHED: "已移入回收站",
     PAUSED: "已暂停",
   };
   const en: Record<string, string> = {
@@ -170,9 +177,50 @@ export function statusLabel(status = "", locale = "zh-CN") {
     MISSING: "Directory deleted",
     INACCESSIBLE: "Directory unavailable",
     ACTIVE: "Enabled",
+    TRASHED: "Moved to trash",
     PAUSED: "Paused",
   };
   return (locale === "zh-CN" ? zh : en)[status] || status || "—";
+}
+export function databaseTypeLabel(type = "", locale = "zh-CN") {
+  const raw = String(type || "");
+  const value = raw.toLowerCase();
+  const labels: Record<string, [string, string]> = {
+    sqlite: ["SQLite 3", "SQLite 3"],
+    unknown: ["未知数据库", "Unknown database"],
+    mysql: ["MySQL", "MySQL"],
+    mariadb: ["MariaDB", "MariaDB"],
+    postgresql: ["PostgreSQL", "PostgreSQL"],
+    mongodb: ["MongoDB", "MongoDB"],
+    redis: ["Redis", "Redis"],
+  };
+  return labels[value]?.[locale === "zh-CN" ? 0 : 1] || raw || "—";
+}
+export function scheduleLabel(
+  scheduleType = "",
+  executionTime = "",
+  cronExpression = "",
+  locale = "zh-CN",
+) {
+  const time = executionTime ? ` · ${executionTime}` : "";
+  switch (String(scheduleType).toUpperCase()) {
+    case "MANUAL":
+      return locale === "zh-CN" ? "手动执行" : "Manual";
+    case "HOURLY":
+      return locale === "zh-CN" ? "每小时" : "Hourly";
+    case "DAILY":
+      return `${locale === "zh-CN" ? "每天" : "Daily"}${time}`;
+    case "WEEKLY":
+      return `${locale === "zh-CN" ? "每周一" : "Every Monday"}${time}`;
+    case "CRON":
+      return `${locale === "zh-CN" ? "自定义 Cron" : "Custom Cron"}${
+        cronExpression ? ` · ${cronExpression}` : ""
+      }`;
+    default:
+      return [scheduleType, executionTime || cronExpression]
+        .filter(Boolean)
+        .join(" · ") || "—";
+  }
 }
 export function BrandLogo({ small = false }: { small?: boolean }) {
   return (
@@ -205,9 +253,13 @@ export function StatusBadge({
         "INTERRUPTED",
       ].includes(status || "") ? (
         <XCircle />
-      ) : ["WARNING", "OPEN", "BACKUPABLE_SHARED_WARNING", "PAUSED"].includes(
-          status || "",
-        ) ? (
+      ) : [
+          "WARNING",
+          "OPEN",
+          "BACKUPABLE_SHARED_WARNING",
+          "PAUSED",
+          "SYSTEM_UNSUPPORTED",
+        ].includes(status || "") ? (
         <CircleAlert />
       ) : status === "NO_DATA" ? (
         <Info />
@@ -242,6 +294,8 @@ export function ModeBadge({
 export function apiErrorLabel(code = "REQUEST_FAILED", locale = "zh-CN") {
   const zh: Record<string, string> = {
     REQUEST_FAILED: "请求未完成，请稍后重试。",
+    REQUEST_TIMEOUT: "请求等待超时，请重新加载。",
+    SYNC_START_FAILED: "应用目录同步未能启动，请稍后重试。",
     IDENTITY_MISMATCH: "当前登录会话与懒猫账号不一致，请重新登录。",
     SESSION_REQUIRED: "登录会话已失效，请重新登录。",
     RESOURCE_NOT_FOUND: "当前账号下未找到所需资源。",
@@ -250,7 +304,58 @@ export function apiErrorLabel(code = "REQUEST_FAILED", locale = "zh-CN") {
     APPLICATION_CATALOG_UNAVAILABLE: "应用目录暂时不可用，请稍后重新检测。",
     BACKUP_ALREADY_RUNNING: "该实例已有正在进行的备份。",
     INSTANCE_NOT_BACKUPABLE: "当前探测结果不允许创建备份。",
+    INSTANCE_ALREADY_QUEUED: "该实例已在备份队列中。",
+    SHARED_INSTANCE_CONFIRMATION_REQUIRED:
+      "该单实例可能包含共享数据，需要确认风险后才能备份。",
+    NO_APPLICATION_DATA: "目标应用当前没有可备份的数据。",
+    UNSUPPORTED_DATABASE: "检测到当前版本不支持的数据库，备份已停止。",
+    BACKUP_PRECHECK_FAILED: "备份预检未通过，请重新检测目标应用。",
+    SQLITE_SOURCE_LOCKED:
+      "目标应用持续占用 SQLite；请暂停目标应用后重新执行备份。",
+    SQLITE_SNAPSHOT_FAILED:
+      "无法创建一致的 SQLite 快照，请检查目标应用后重试。",
+    SOURCE_FILE_CHANGED: "源文件在备份过程中发生变化，请稍后重试。",
+    SOURCE_READ_FAILED: "读取目标应用数据失败，请检查应用状态和权限。",
+    SOURCE_PERMISSION_DENIED: "没有读取目标应用数据的权限。",
+    SOURCE_PROJECTION_UNAVAILABLE:
+      "无法访问目标应用的数据投影，请检查平台权限和应用状态。",
+    RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE:
+      "当前环境没有显示目标应用的数据投影。",
+    SOURCE_INSTANCE_NOT_FOUND: "未找到目标应用实例的数据目录。",
+    SOURCE_NOT_READY: "目标应用数据尚未准备完成，请稍后重试。",
+    SOURCE_OWNER_MISMATCH: "目标应用数据不属于当前可访问范围。",
+    SOURCE_MAPPING_AMBIGUOUS: "无法确定目标应用的数据目录，请重新检测。",
+    SOURCE_ENTRY_LIMIT_EXCEEDED:
+      "目标应用的数据目录过大，当前版本无法安全扫描。",
+    PROBE_FAILED: "目标应用检测未完成，请稍后重新检测。",
+    BACKUP_SCOPE_PATH_MISSING:
+      "所选备份范围已变更或不存在，请检查计划范围。",
+    INVALID_BACKUP_SCOPE: "备份范围无效，请重新选择文件或目录。",
+    CORE_SCOPE_PROFILE_UNAVAILABLE: "核心备份范围暂不可用，请重新选择范围。",
+    PLAN_PAUSED_SCOPE_INVALID:
+      "计划已暂停：所选备份范围已失效，请修正范围后再启用。",
+    SCOPE_REVISION_SUPERSEDED:
+      "计划范围已更新，未执行的旧任务已取消。",
     BACKUP_QUEUE_FULL: "备份队列暂时繁忙，请稍后重试。",
+    QUEUE_PERSIST_FAILED: "备份任务无法写入队列，请稍后重试。",
+    WORKER_INTERRUPTED: "备份服务重启或中断，任务将重新排队。",
+    MANUAL_RETRY: "任务已加入手动重试队列。",
+    TASK_CANCELLED: "任务已取消。",
+    BACKUP_CANCELLED: "备份已取消。",
+    BACKUP_TIMED_OUT: "备份超过允许时间，已停止。",
+    BACKUP_INTERRUPTED: "备份服务中断，备份未能完成。",
+    BACKUP_FAILED: "备份未能完成，请稍后重试。",
+    BACKUP_CACHE_UNAVAILABLE:
+      "备份临时目录不可用，请检查应用存储空间后重试。",
+    CONTROL_DATABASE_WRITE_FAILED: "备份记录保存失败，请稍后重试。",
+    ARCHIVE_PATH_UNSAFE: "归档路径不符合安全规则，任务已停止。",
+    ARCHIVE_WRITE_FAILED: "归档文件写入失败，请检查存储空间后重试。",
+    ARCHIVE_DIGEST_FAILED: "归档校验摘要生成失败，请稍后重试。",
+    MANIFEST_WRITE_FAILED: "备份清单写入失败，请稍后重试。",
+    SNAPSHOT_VERIFICATION_FAILED: "生成的快照未通过校验。",
+    STORAGE_WRITE_FAILED: "写入备份存储失败，请检查网盘状态后重试。",
+    STORAGE_COMMIT_FAILED: "提交备份到网盘失败，请稍后重试。",
+    SETTINGS_LOOKUP_FAILED: "无法读取备份设置，请稍后重试。",
     INVALID_PLAN_NAME: "计划名称无效。",
     INVALID_PLAN_TARGETS: "请选择当前账号下可备份的应用实例。",
     INVALID_SCHEDULE: "执行频率无效。",
@@ -264,6 +369,8 @@ export function apiErrorLabel(code = "REQUEST_FAILED", locale = "zh-CN") {
   };
   const en: Record<string, string> = {
     REQUEST_FAILED: "The request did not complete. Please try again.",
+    REQUEST_TIMEOUT: "The request timed out. Reload the page.",
+    SYNC_START_FAILED: "Application sync could not start. Please try again.",
     IDENTITY_MISMATCH:
       "The signed-in identity does not match this application instance. Sign in again.",
     SESSION_REQUIRED: "Your sign-in session has expired. Sign in again.",
@@ -276,7 +383,73 @@ export function apiErrorLabel(code = "REQUEST_FAILED", locale = "zh-CN") {
     BACKUP_ALREADY_RUNNING: "This instance already has a backup in progress.",
     INSTANCE_NOT_BACKUPABLE:
       "The current probe result does not allow a backup.",
+    INSTANCE_ALREADY_QUEUED: "This instance is already in the backup queue.",
+    SHARED_INSTANCE_CONFIRMATION_REQUIRED:
+      "This single-instance application may contain shared data. Confirm the risk before backing it up.",
+    NO_APPLICATION_DATA: "The target application has no data to back up.",
+    UNSUPPORTED_DATABASE:
+      "A database unsupported by this version was detected, so the backup was stopped.",
+    BACKUP_PRECHECK_FAILED:
+      "The backup precheck did not pass. Rescan the target application.",
+    SQLITE_SOURCE_LOCKED:
+      "The target application is continuously locking SQLite. Pause it, then run the backup again.",
+    SQLITE_SNAPSHOT_FAILED:
+      "A consistent SQLite snapshot could not be created. Check the target application and try again.",
+    SOURCE_FILE_CHANGED:
+      "A source file changed while it was being backed up. Try again later.",
+    SOURCE_READ_FAILED:
+      "The target application data could not be read. Check its state and permissions.",
+    SOURCE_PERMISSION_DENIED:
+      "This account does not have permission to read the target application data.",
+    SOURCE_PROJECTION_UNAVAILABLE:
+      "The target application data projection is unavailable. Check platform permissions and the application state.",
+    RUNTIME_APPVAR_PROJECTION_NOT_VISIBLE:
+      "The target application data projection is not visible in this environment.",
+    SOURCE_INSTANCE_NOT_FOUND:
+      "The target application instance data directory was not found.",
+    SOURCE_NOT_READY: "The target application data is not ready yet. Try again later.",
+    SOURCE_OWNER_MISMATCH:
+      "The target application data is outside the current accessible scope.",
+    SOURCE_MAPPING_AMBIGUOUS:
+      "The target application data directory could not be determined. Rescan the application.",
+    SOURCE_ENTRY_LIMIT_EXCEEDED:
+      "The target application data directory is too large for this version to scan safely.",
+    PROBE_FAILED: "The target application check did not complete. Try rescanning later.",
+    BACKUP_SCOPE_PATH_MISSING:
+      "The selected backup scope changed or no longer exists. Check the plan scope.",
+    INVALID_BACKUP_SCOPE:
+      "The backup scope is invalid. Select the files or directories again.",
+    CORE_SCOPE_PROFILE_UNAVAILABLE:
+      "The core backup scope is unavailable. Select the scope again.",
+    PLAN_PAUSED_SCOPE_INVALID:
+      "The plan was paused because its selected backup scope is no longer valid. Fix the scope, then enable it again.",
+    SCOPE_REVISION_SUPERSEDED:
+      "The plan scope was updated, so pending tasks from the previous scope were cancelled.",
     BACKUP_QUEUE_FULL: "The backup queue is busy. Try again later.",
+    QUEUE_PERSIST_FAILED: "The backup task could not be added to the queue. Try again later.",
+    WORKER_INTERRUPTED:
+      "The backup worker restarted or was interrupted. The task will be queued again.",
+    MANUAL_RETRY: "The task has been queued for a manual retry.",
+    TASK_CANCELLED: "The task was cancelled.",
+    BACKUP_CANCELLED: "The backup was cancelled.",
+    BACKUP_TIMED_OUT: "The backup exceeded its allowed time and was stopped.",
+    BACKUP_INTERRUPTED: "The backup service was interrupted before the backup completed.",
+    BACKUP_FAILED: "The backup did not complete. Try again later.",
+    BACKUP_CACHE_UNAVAILABLE:
+      "The backup temporary directory is unavailable. Check application storage space and try again.",
+    CONTROL_DATABASE_WRITE_FAILED:
+      "The backup record could not be saved. Try again later.",
+    ARCHIVE_PATH_UNSAFE: "An archive path did not meet safety rules, so the task was stopped.",
+    ARCHIVE_WRITE_FAILED:
+      "The archive could not be written. Check available storage and try again.",
+    ARCHIVE_DIGEST_FAILED: "The archive checksum could not be created. Try again later.",
+    MANIFEST_WRITE_FAILED: "The backup manifest could not be written. Try again later.",
+    SNAPSHOT_VERIFICATION_FAILED: "The created snapshot did not pass verification.",
+    STORAGE_WRITE_FAILED:
+      "The backup could not be written to storage. Check cloud-drive status and try again.",
+    STORAGE_COMMIT_FAILED:
+      "The backup could not be committed to the cloud drive. Try again later.",
+    SETTINGS_LOOKUP_FAILED: "Backup settings could not be read. Try again later.",
     INVALID_PLAN_NAME: "The plan name is invalid.",
     INVALID_PLAN_TARGETS: "Choose a backupable instance from this account.",
     INVALID_SCHEDULE: "The schedule is invalid.",
@@ -290,33 +463,57 @@ export function apiErrorLabel(code = "REQUEST_FAILED", locale = "zh-CN") {
       "Operations services are temporarily unavailable.",
     EVENT_STREAM_UNAVAILABLE: "Live updates are unavailable on this server.",
   };
-  return (locale === "zh-CN" ? zh : en)[code] || code;
+  return (locale === "zh-CN" ? zh : en)[code] ||
+    (locale === "zh-CN"
+      ? "备份任务未能完成，请查看任务详情后重试。"
+      : "The backup task did not complete. Review the task details, then try again.");
 }
-function applicationIcon(icon?: string) {
+function applicationIcon(icon?: string, appid?: string) {
   const value = icon?.trim();
-  if (!value) return undefined;
+  const fallback = appid?.trim() ? systemIconURL(appid.trim()) : undefined;
+  if (!value) return fallback;
   if (/^data:image\/(?:avif|gif|jpe?g|png|svg\+xml|webp);/i.test(value))
     return value;
+  if (!/^(?:https?:)?\/\//i.test(value) && !value.startsWith("/"))
+    return fallback;
   try {
     const candidate = new URL(value, window.location.origin);
+    if (
+      candidate.protocol === "http:" &&
+      window.location.protocol === "https:"
+    )
+      return fallback;
     return ["http:", "https:"].includes(candidate.protocol)
       ? candidate.href
-      : undefined;
+      : fallback;
   } catch {
-    return undefined;
+    return fallback;
   }
+}
+
+function systemIconURL(appid: string) {
+  const host = window.location.hostname;
+  const labels = host.split(".").filter(Boolean);
+  const boxIndex = labels.indexOf("box");
+  const boxHost =
+    boxIndex >= 0
+      ? labels.slice(boxIndex).join(".")
+      : labels.length > 2
+        ? labels.slice(1).join(".")
+        : host;
+  return `${window.location.protocol}//${boxHost}/sys/icons/${encodeURIComponent(appid)}.png`;
 }
 export function AppMark({
   app,
   name = "?",
   tone = "blue",
 }: {
-  app?: { icon?: string; name?: string };
+  app?: { icon?: string; name?: string; appid?: string };
   name?: string;
   tone?: string;
 }) {
   const label = app?.name || name;
-  const icon = applicationIcon(app?.icon);
+  const icon = applicationIcon(app?.icon, app?.appid);
   const [failedIcon, setFailedIcon] = useState("");
   if (icon && failedIcon !== icon)
     return (
@@ -347,7 +544,6 @@ export function PageHeader({
   return (
     <div className="page-header">
       <div>
-        <div className="eyebrow">MIMI APP BACKUP · V1</div>
         <h1 className="page-title">{title}</h1>
         <p className="page-desc">{desc}</p>
       </div>
@@ -401,11 +597,11 @@ export function Empty({ label }: { label: string }) {
     </div>
   );
 }
-export function Loading() {
+export function Loading({ label = "正在读取当前账号的数据…" }: { label?: string }) {
   return (
-    <div className="empty">
+    <div className="empty" role="status" aria-live="polite">
       <LoaderCircle className="spin" />
-      正在读取当前账号的数据…
+      <div>{label}</div>
     </div>
   );
 }
@@ -444,9 +640,10 @@ export function TableIconButton({
 }) {
   return (
     <button
-      className={`icon-button ${primary ? "primary" : ""}`}
+      className={`icon-button table-icon-button ${primary ? "primary" : ""}`}
       style={{ width: 28, height: 28 }}
       title={label}
+      data-tooltip={label}
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
@@ -461,7 +658,12 @@ export function Pager({
   locale,
   onLimit,
 }: {
-  page: { history: string[]; nextCursor?: string; limit?: number };
+  page: {
+    history: string[];
+    nextCursor?: string;
+    limit?: number;
+    loading?: boolean;
+  };
   onMove: (direction: "previous" | "next") => void;
   locale: string;
   onLimit?: (limit: number) => void;
@@ -473,6 +675,7 @@ export function Pager({
         <select
           className="select"
           value={page.limit || 15}
+          disabled={page.loading}
           onChange={(event) => onLimit?.(Number(event.target.value))}
         >
           <option value={15}>15</option>
@@ -483,7 +686,7 @@ export function Pager({
       </label>
       <button
         className="button button-secondary"
-        disabled={!page.history.length}
+        disabled={page.loading || !page.history.length}
         onClick={() => onMove("previous")}
       >
         <ChevronLeft />
@@ -496,7 +699,7 @@ export function Pager({
       </span>
       <button
         className="button button-secondary"
-        disabled={!page.nextCursor}
+        disabled={page.loading || !page.nextCursor}
         onClick={() => onMove("next")}
       >
         {locale === "zh-CN" ? "下一页" : "Next"}
